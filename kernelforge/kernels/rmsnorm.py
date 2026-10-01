@@ -137,10 +137,11 @@ def rmsnorm_reference(
     performs. Some implementations (Llama's, for one) round after the rescale
     and then multiply by gamma in the low precision; that choice differs by a
     single rounding step and is well inside the fp16 tolerance either way.
+    float64 inputs are computed in float64, which makes this an exact reference.
     """
-    xf = x.to(torch.float32)
+    xf = x.to(torch.promote_types(x.dtype, torch.float32))
     inv_rms = torch.rsqrt(xf.pow(2).mean(dim=-1, keepdim=True) + eps)
-    return (xf * inv_rms * gamma.to(torch.float32)).to(x.dtype)
+    return (xf * inv_rms * gamma.to(xf.dtype)).to(x.dtype)
 
 
 class RMSNormOperator(Operator):
