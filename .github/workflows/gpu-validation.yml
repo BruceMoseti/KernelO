@@ -1,0 +1,75 @@
+name: GPU validation
+
+# Everything that needs a CUDA device: kernel correctness, the tuner end to
+# end, the handwritten CUDA extension, and transformer-block parity.
+#
+# Deliberately not triggered on every push. It needs a self-hosted runner with
+# a GPU, and the benchmark artefacts are only comparable when the hardware is
+# held fixed, so runs are explicit rather than incidental.
+#
+# Note what this workflow does and does not gate. It gates *correctness* on a
+# GPU. It records benchmark results as artefacts but does not fail on a
+# latency threshold: a regression gate needs a stable baseline on identical
+# hardware, and treating a shared runner's timings as that baseline produces a
+# flaky signal that teams learn to ignore. Compare the uploaded artefacts
+# against a previous run on the same card instead.
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Workload suite for the benchmark step
+        type: choice
+        default: smoke
+        options: [smoke, sweep, transformer]
+      dtype:
+        description: dtype to benchmark
+        type: choice
+        default: fp16
+        options: [fp16, bf16, fp32]
+  schedule:
+    # Weekly, so correctness drift from a PyTorch or Triton update is caught
+    # even when nobody runs this by hand.
+    - cron: "0 6 * * 1"
+
+jobs:
+  gpu:
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record the hardware and library versions
+        run: |
+          nvidia-smi
+          python -m pip install -e '.[dev,report]'
+          python -m kernelforge.cli.main env | tee environment.txt
+
+      - name: Correctness, including every budgeted candidate
+        run: pytest -q
+
+      - name: Tune the flagship shapes
+        run: |
+          python -m kernelforge.cli.main tune matmul --m 2048 --n 4096 --k 4096 --dtype ${{ inputs.dtype || 'fp16' }}
+          python -m kernelforge.cli.main tune rmsnorm --rows 4096 --cols 4096 --dtype ${{ inputs.dtype || 'fp16' }}
+          python -m kernelforge.cli.main tune fused_linear --m 4096 --n 11008 --k 4096 --dtype ${{ inputs.dtype || 'fp16' }}
+
+      - name: Benchmark and report
+        run: |
+          for op in matmul rmsnorm fused_linear; do
+            python -m kernelforge.cli.main benchmark "$op" \
+              --suite ${{ inputs.suite || 'smoke' }} --dtype ${{ inputs.dtype || 'fp16' }}
+          done
+          python -m kernelforge.cli.main compare transformer --seq 2048
+          python -m kernelforge.cli.main report
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernelforge-results-${{ github.run_id }}
+          path: |
+            environment.txt
+            reports/
+            results/
+          if-no-files-found: warn

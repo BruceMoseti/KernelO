@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Generated measurement artefacts. The database and the reports are outputs of
+# a specific machine; checking them in would mix one GPU's numbers into
+# another's.
+results/*.db
+results/*.csv
+reports/
+*.ncu-rep
+*.json.gz
+
+# JIT-compiled CUDA extension output
+kernelforge/csrc/build/

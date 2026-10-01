@@ -1,0 +1,113 @@
+name: CI
+
+# Correctness and static checks only. No performance assertion runs here:
+# GitHub's shared runners have no GPU, and gating on timings measured by noisy
+# shared hardware would produce a flaky signal that gets ignored. Performance
+# lives in the gpu-validation workflow, on hardware that is held fixed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    name: tests (python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # CPU PyTorch, installed first so the package's torch dependency is
+      # already satisfied and pip does not pull the multi-gigabyte CUDA wheel.
+      - name: Install PyTorch (CPU)
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install KernelForge
+        run: |
+          pip install -e '.[dev,report]'
+          pip install triton
+
+      # Triton lowers kernels to PTX and cubin for a named target without a
+      # device, and clang does the same for the handwritten CUDA kernel given
+      # CUDA's headers and libdevice. Both make the kernels checkable here.
+      # clang's CUDA wrapper pulls <cmath> into the NVPTX device pass, and
+      # libstdc++ 14's <limits> declares numeric_limits<__float128>, which
+      # NVPTX cannot support. The harness probes for a usable version, but it
+      # can only find one that is installed, and the runner image ships 14.
+      - name: Install CUDA headers and libdevice for the device-code checks
+        run: |
+          pip install nvidia-cuda-runtime-cu12 nvidia-cuda-nvcc-cu12 \
+                      nvidia-cuda-cccl-cu12 nvidia-curand-cu12
+          sudo apt-get update
+          sudo apt-get install -y clang libstdc++-13-dev
+          clang++ --version
+          ls /usr/include/c++/
+
+      - name: Confirm the package imports without a GPU
+        run: |
+          python -c "import kernelforge; print(kernelforge.__version__)"
+          python -m kernelforge.cli.main env
+
+      - name: Run the CPU-safe suite
+        run: pytest -m "not gpu" -q
+
+      # The device-code checks are the point of this workflow. If the toolchain
+      # above failed to assemble they would skip, and a green run would mean
+      # the kernels were never compiled, so their presence is asserted.
+      #
+      # The assertion is "nothing was skipped" rather than a search for a
+      # particular reason: under `-m "not gpu"` the device-dependent tests in
+      # these two files are deselected, not skipped, so any skip at all means
+      # a toolchain went missing. Matching on the wording of a skip message
+      # would silently stop working the next time that message is reworded.
+      - name: Assert the device-code checks actually ran
+        run: |
+          pytest tests/test_triton_compile.py tests/test_cuda_rmsnorm.py \
+                 -m "not gpu" -q --no-header -rs 2>&1 | tee result.txt
+          if grep -qi "skipped" result.txt; then
+            echo "::error::device-code compile checks were skipped; reasons above"
+            exit 1
+          fi
+
+  compile-sweep:
+    name: compile every budgeted candidate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: |
+          pip install -e '.[dev]'
+          pip install triton
+      - name: Compile all 48 GEMM candidates for sm80
+        run: pytest -m slow -q
