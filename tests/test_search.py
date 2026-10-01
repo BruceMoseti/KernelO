@@ -262,6 +262,21 @@ def test_rmsnorm_rejects_rows_per_program_larger_than_the_batch(a100_caps):
         assert config["ROWS_PER_PROGRAM"] <= 2
 
 
+@pytest.mark.parametrize("operation", ["rmsnorm", "softmax"])
+@pytest.mark.parametrize("cols", [1, 7, 16])
+def test_rows_narrower_than_a_warp_still_produce_candidates(operation, cols, a100_caps):
+    """A single warp is the fewest threads there are, so it must survive.
+
+    A row of 16 columns or fewer leaves some of a warp's 32 lanes idle under
+    any configuration. Rejecting idle threads outright rejected the whole grid,
+    including the one-warp default the kernel ships with.
+    """
+    problem = Problem.create(operation, "fp16", rows=1024, cols=cols)
+    candidates = search_space(operation).candidates(problem, a100_caps)
+    assert candidates, f"no candidates for {problem}"
+    assert {c["num_warps"] for c in candidates} == {1}
+
+
 def test_vector_add_space_rejects_idle_threads(a100_caps):
     problem = Problem.create("vector_add", "fp16", n=1_000_003)
     for config in VectorAddSearchSpace().candidates(problem, a100_caps):
