@@ -107,9 +107,9 @@ arithmetic intensity:       1024.0 FLOP/byte
 
 That is the line to read first. At 1024 FLOP/byte this shape sits 6.7× above an
 A100's ridge point of ~153, so it genuinely can be compute-bound and tuning the
-tiling is worth doing. A shape *below* the ridge point cannot be, and the honest
-conclusion there is that the kernel is already finished — which is exactly what
-the framework reports for single-token decode (1.0 FLOP/byte). See
+tiling is worth doing. A shape *below* the ridge point cannot be: its ceiling
+is memory bandwidth, so what matters is how close it comes to the card's peak
+GB/s — the case for single-token decode (1.0 FLOP/byte). See
 [§ Benchmark methodology](#benchmark-methodology).
 
 `kernelforge report` reads the SQLite database and renders `summary.md`,
@@ -462,8 +462,8 @@ that matter most:
 
 Derived metrics are reported per operator class: TFLOP/s for the compute-bound
 GEMMs, GB/s for the memory-bound reductions, and arithmetic intensity against
-the device's FLOP/byte ridge point — which is the first-order answer to whether
-a kernel can be made faster at all.
+the device's FLOP/byte ridge point — which is the first-order answer to which
+roof bounds a kernel: compute throughput or memory bandwidth.
 
 ---
 
