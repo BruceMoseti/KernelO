@@ -41,7 +41,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from itertools import product
 
-from kernelforge.dtypes import itemsize
+from kernelforge.dtypes import SUPPORTED_DTYPES, itemsize
 from kernelforge.runtime.env import DeviceCaps, device_caps
 from kernelforge.tuning.config import KernelConfig, Problem
 
@@ -78,9 +78,16 @@ def ceil_div(a: int, b: int) -> int:
 
 
 class SearchSpace(ABC):
-    """The set of configurations worth trying for one operation."""
+    """The set of configurations worth trying for one operation.
+
+    With :class:`KernelConfig` this is the spec's configuration record: a
+    config carries the kernel name and its parameters, and its search space
+    carries the dtypes the kernel supports (``dtypes``) and the constraints
+    (``reject_reason``).
+    """
 
     operation: str
+    dtypes: tuple[str, ...] = SUPPORTED_DTYPES
 
     def __init__(self, max_candidates: int = DEFAULT_MAX_CANDIDATES) -> None:
         if max_candidates < 1:
@@ -129,6 +136,11 @@ class SearchSpace(ABC):
         if problem.operation != self.operation:
             raise ValueError(
                 f"{type(self).__name__} handles {self.operation!r}, got {problem.operation!r}"
+            )
+        if problem.dtype_name not in self.dtypes:
+            raise ValueError(
+                f"{type(self).__name__} does not support {problem.dtype_name}; "
+                f"supported: {', '.join(self.dtypes)}"
             )
         caps = caps if caps is not None else device_caps()
         budget = max_candidates if max_candidates is not None else self.max_candidates

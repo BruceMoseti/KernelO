@@ -273,6 +273,19 @@ def test_search_space_rejects_a_mismatched_problem(a100_caps):
         MatmulSearchSpace().generate(Problem.create("rmsnorm", "fp16", rows=1, cols=1), a100_caps)
 
 
+def test_search_space_rejects_a_dtype_it_does_not_support(a100_caps):
+    """Supported dtypes belong to the operator's space, next to its constraints."""
+
+    class _Fp16OnlySpace(MatmulSearchSpace):
+        dtypes = ("fp16",)
+
+    space = _Fp16OnlySpace()
+    assert space.candidates(GEMM, a100_caps)
+    fp32_problem = Problem.create("matmul", "fp32", M=2048, N=4096, K=4096)
+    with pytest.raises(ValueError, match="does not support fp32"):
+        space.generate(fp32_problem, a100_caps)
+
+
 def test_search_space_lookup_by_name():
     assert isinstance(search_space("matmul"), MatmulSearchSpace)
     with pytest.raises(ValueError, match="no search space"):
