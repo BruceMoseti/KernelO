@@ -75,7 +75,9 @@ _MATMUL_SHAPES: dict[str, tuple[tuple[int, int, int], ...]] = {
         (1023, 1023, 1023),
         (1024, 1024, 1024),
         (2057, 127, 513),
-        (768, 2048, 4096),
+        # The spec's MatMul torture shapes include these two as well.
+        (2048, 768, 4096),
+        (4096, 4096, 4096),
     ),
 }
 

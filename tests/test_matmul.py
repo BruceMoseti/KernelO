@@ -98,6 +98,19 @@ def test_default_config_across_awkward_shapes(shape, dtype, device):
     )
 
 
+def test_correctness_shapes_include_the_specified_torture_set():
+    """The spec's MatMul torture shapes, as (M, N, K); the suite adds awkward ones."""
+    specified = {
+        (128, 128, 128),
+        (511, 769, 1025),
+        (1024, 1024, 1024),
+        (2048, 768, 4096),
+        (4096, 4096, 4096),
+    }
+    suite = {tuple(p.dims_dict.values()) for p in workloads.problems("matmul", "correctness")}
+    assert specified <= suite, f"missing: {sorted(specified - suite)}"
+
+
 @pytest.mark.parametrize("tile", TILE_CONFIGS)
 @pytest.mark.parametrize("shape", [(127, 129, 65), (257, 255, 511), (1, 1, 4096), (4096, 1, 1)])
 def test_boundary_masking_across_tile_shapes(tile, shape, device):
