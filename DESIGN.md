@@ -56,8 +56,10 @@ Candidate generation separates two different things that are easy to conflate:
   feasible, and measuring 180 configurations per shape is minutes of compiling.
 
 Keeping them separate is what stops the filters from being quietly tightened
-until the count looks nice. A tighter rule can exclude the true optimum; a
-budget cannot, it only costs the chance of finding it. All three counts are
+until the count looks nice. Both can exclude the true optimum. The difference
+is that a rule claims a configuration cannot win, while the budget only defers
+it: the cut follows the stated priority, never splits configurations that
+priority ranks equal, and `--max-candidates` lifts it. All three counts are
 reported for the same reason.
 
 The filters read a `DeviceCaps` value object rather than `torch.cuda` directly.

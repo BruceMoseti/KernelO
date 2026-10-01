@@ -24,8 +24,10 @@ three stages:
 
    Neither kind is derived from measurements, so both transfer across GPUs.
 3. **Budget** the survivors: sort by a documented priority and keep the top
-   ``max_candidates``. The budget bounds tuning cost without narrowing the
-   rules to the point where they might exclude the true optimum.
+   ``max_candidates``, rounded up to the end of a priority tier so that
+   configurations the priority cannot tell apart are kept or dropped
+   together. The budget bounds tuning cost; what it cuts is unmeasured, not
+   ruled out.
 
 Every stage count is reported, so a shrinking search space is visible rather
 than silent.
@@ -104,9 +106,11 @@ class SearchSpace(ABC):
     ) -> tuple[float, ...]:
         """Sort key for the budget; lower sorts first.
 
-        The final element is always the serialised config so that ties resolve
-        deterministically and a given problem always yields the same
-        candidates.
+        Configurations with equal priority form a tier, and the budget never
+        splits one: it is rounded up to the end of the tier it falls in. A
+        space that does not rank its configurations is therefore a single
+        tier. Within a tier the serialised config fixes the order, so a given
+        problem always yields the same candidates.
         """
         return (0.0,)
 
@@ -149,13 +153,18 @@ class SearchSpace(ABC):
         rejected.extend(pruned)
 
         kept.sort(key=lambda c: (*self.priority(c, problem, caps), c.to_json()))
+        selected = budget
+        while 0 < selected < len(kept) and self.priority(
+            kept[selected], problem, caps
+        ) == self.priority(kept[selected - 1], problem, caps):
+            selected += 1
         return CandidateSet(
             problem=problem,
             generated=generated,
             feasible=feasible,
             after_prune=len(kept),
             budget=budget,
-            candidates=kept[:budget],
+            candidates=kept[:selected],
             rejected=tuple(rejected),
         )
 
@@ -202,7 +211,8 @@ class SearchSpace(ABC):
             f"  grid points      : {result.generated}",
             f"  feasible         : {result.feasible}",
             f"  after prune      : {result.after_prune}",
-            f"  selected (budget): {len(result.candidates)} of {result.budget}",
+            f"  selected (budget): {len(result.candidates)} of {result.budget}"
+            + (" (rounded up to a whole tier)" if len(result.candidates) > result.budget else ""),
         ]
         reasons: dict[str, int] = {}
         for _, reason in result.rejected:

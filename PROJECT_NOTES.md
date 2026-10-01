@@ -250,11 +250,14 @@ optimum. Instead there are two distinct mechanisms:
   which is why `test_shared_memory_filter_is_device_specific` can assert that a
   tile feasible on an A100 is rejected for an RTX 4090 on a machine with neither.
 - **A budget** bounds search cost by keeping the top 48 under a documented
-  priority ordering.
+  priority ordering, rounded up so it never splits configurations that
+  ordering ranks equal.
 
-The asymmetry is the whole argument: a wrong filter can exclude the true
-optimum; a budget can only cost the chance of finding it. All three counts
-(generated / feasible / budgeted) are reported so a shrinking space is visible.
+The difference is what each claims: a wrong filter excludes the true optimum
+while asserting it cannot win; the budget can also leave the optimum
+unmeasured, but only defers it, and `--max-candidates` lifts it. All three
+counts (generated / feasible / budgeted) are reported so a shrinking space is
+visible.
 
 ### A related subtlety I got wrong first
 
