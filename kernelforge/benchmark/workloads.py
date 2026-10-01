@@ -86,8 +86,8 @@ _ROW_SHAPES: dict[str, tuple[tuple[int, int], ...]] = {
     ),
     "sweep": tuple(
         (rows, cols)
-        for rows in (512, 2048, 8192)
-        for cols in (128, 256, 512, 1024, 2048, 4096, 8192)
+        for rows in (128, 512, 2048, 8192)
+        for cols in (128, 256, 512, 768, 1024, 2048, 4096, 8192)
     ),
     "transformer": tuple((tokens, HIDDEN) for tokens in TOKEN_COUNTS)
     + tuple((tokens, 768) for tokens in TOKEN_COUNTS),
