@@ -114,6 +114,7 @@ def test_cache_clear_reports_what_it_removed(capsys, tmp_path):
     cache.put(
         Problem.create("matmul", "fp16", M=64, N=64, K=64),
         "NVIDIA_Test_sm80",
+        "3.8.0",
         KernelConfig("matmul", BLOCK_M=64),
     )
     assert main(["cache", "list", "--cache", str(path)]) == 0

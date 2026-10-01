@@ -102,6 +102,7 @@ class TuningResult:
     bytes_moved: int
     elapsed_s: float
     memory_bound: bool = False
+    from_cache: bool = False
     rejections: tuple[tuple[KernelConfig, str], ...] = field(default=(), repr=False)
 
     @property
@@ -165,6 +166,7 @@ class Tuner:
         seed: int = 0,
         db: ResultsDB | None = None,
         cache: ConfigCache | None = None,
+        retune: bool = False,
         log: Callable[[str], None] | None = None,
         timer: Callable[..., TimingResult] = benchmark,
     ) -> None:
@@ -176,6 +178,7 @@ class Tuner:
         self.seed = seed
         self.db = db
         self.cache = cache
+        self.retune = retune
         self._log = log
         #: Called with the same arguments as :func:`benchmark`.
         self.timer = timer
@@ -199,6 +202,17 @@ class Tuner:
         candidates = operator.search_space().generate(
             problem, caps, max_candidates=self.max_candidates
         )
+        cached = (
+            None
+            if self.cache is None or self.retune
+            else self.cache.get(problem, env.device_key, env.triton_version)
+        )
+        if cached is not None:
+            self.log(
+                "Cache hit: verifying and timing the cached configuration instead of tuning "
+                "(--retune to tune again)"
+            )
+        configs = [cached] if cached is not None else list(candidates)
         inputs = operator.make_inputs(problem, resolved, seed=self.seed)
 
         # One numerical policy for the whole session. TF32 would otherwise
@@ -208,13 +222,13 @@ class Tuner:
         with exact_fp32_matmul():
             reference = operator.reference(*inputs)
 
-            self.log(f"Verifying candidates... ({len(candidates)} to check)")
+            self.log(f"Verifying candidates... ({len(configs)} to check)")
             outcomes = [
                 self._verify_candidate(operator, config, inputs, reference, problem)
-                for config in candidates
+                for config in configs
             ]
             passed = [o for o in outcomes if o.ok]
-            self.log(f"{len(passed)} / {len(candidates)} configurations passed correctness")
+            self.log(f"{len(passed)} / {len(configs)} configurations passed correctness")
 
             self.log("Benchmarking...")
             timed = [self._time_candidate(operator, o, inputs, resolved) for o in outcomes]
@@ -236,6 +250,7 @@ class Tuner:
             bytes_moved=operator.bytes_moved(problem),
             elapsed_s=time.perf_counter() - started,
             memory_bound=operator.is_memory_bound(),
+            from_cache=cached is not None,
             rejections=candidates.rejected,
         )
         self._persist(result, env)
@@ -330,10 +345,11 @@ class Tuner:
         return out
 
     def _persist(self, result: TuningResult, env: Environment) -> None:
-        if self.cache is not None and result.best is not None:
+        if self.cache is not None and result.best is not None and not result.from_cache:
             self.cache.put(
                 result.problem,
                 env.device_key,
+                env.triton_version,
                 result.best.config,
                 median_us=result.best.timing.median_us if result.best.timing else None,
                 timestamp=env.timestamp,

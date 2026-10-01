@@ -142,7 +142,7 @@ flowchart TB
 
     subgraph Persistence
         DB[("SQLite<br/>runs · problems · configs · results")]
-        CC[("Config cache<br/>device → op → dtype → shape")]
+        CC[("Config cache<br/>device → Triton → op → dtype → shape")]
     end
 
     subgraph Consumers
@@ -193,7 +193,7 @@ Problem(op, dims, dtype)
    ├─ 8. rank on median latency
    │
    ├─ 9. persist                     SQLite row per candidate + per baseline, with provenance
-   └─ 10. cache                      best config under (board name, op, dtype, shape)
+   └─ 10. cache                      best config under (board name, Triton version, op, dtype, shape)
 ```
 
 Two passes rather than one interleaved loop, because compiling candidate *i+1*
@@ -375,7 +375,10 @@ microseconds. Its key is the full board name plus architecture, not just the
 compute capability, because an RTX 4090 and an RTX 4080 are both `sm89` with
 different SM counts, L2 sizes and bandwidth. A cache file copied to another
 machine therefore *misses* rather than silently serving a configuration tuned
-for other hardware. Selecting a configuration never triggers tuning — a
+for other hardware. The key also holds the Triton version, since the compiler
+generated the code that was measured. `kernelforge tune` reads the cache too:
+a hit verifies and times only the cached configuration, and `--retune` searches
+again. Selecting a configuration never triggers tuning — a
 thirty-second compile sweep inside an inference loop would be a bug.
 
 ---

@@ -111,12 +111,16 @@ run. It is append-only in practice and is what makes a number from last month
 comparable, or knowably incomparable, to one from today.
 
 The config cache is an operational artefact: one JSON file holding the best
-known configuration per device, operation, dtype and shape, which a process can
-read in microseconds. Its key includes the full board name and not just the
-compute capability, because an RTX 4090 and an RTX 4080 are both `sm89` and
-differ in SM count, L2 size and memory bandwidth. A cache file copied to
-another machine therefore misses rather than silently serving a configuration
-tuned for other hardware.
+known configuration per device, Triton version, operation, dtype and shape,
+which a process can read in microseconds. Its key includes the full board name
+and not just the compute capability, because an RTX 4090 and an RTX 4080 are
+both `sm89` and differ in SM count, L2 size and memory bandwidth. A cache file
+copied to another machine therefore misses rather than silently serving a
+configuration tuned for other hardware. The Triton version is in the key for
+the same reason applied to the compiler: it generated the code that was
+measured. `kernelforge tune` reads the cache too. On a hit it verifies and
+times the cached configuration instead of searching again; `--retune` forces
+a new search.
 
 Selecting a configuration never triggers tuning. A thirty-second compile sweep
 inside someone's inference loop would be a bug, not a feature, so
