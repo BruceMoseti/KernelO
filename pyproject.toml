@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kernelforge"
+version = "0.1.0"
+description = "Hardware-aware GPU kernel autotuning and inference optimization for transformer workloads"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.14",
+    "triton>=3.8",
+]
+
+[project.optional-dependencies]
+# numpy is needed by Triton's CPU interpreter (TRITON_INTERPRET=1), which the CPU test suite uses.
+dev = [
+    "mypy>=1.10",
+    "numpy>=1.26",
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[tool.setuptools.packages.find]
+include = ["kernelforge*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "gpu: needs a CUDA GPU; skipped when none is available or TRITON_INTERPRET=1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+
+[tool.mypy]
+files = ["kernelforge"]
+check_untyped_defs = true
+disallow_untyped_defs = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["triton", "triton.*"]
+ignore_missing_imports = true
