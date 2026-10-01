@@ -7,6 +7,7 @@ is stamped with the snapshot produced here.
 
 from __future__ import annotations
 
+import functools
 import platform
 import shutil
 import socket
@@ -130,13 +131,14 @@ def _triton_version() -> str | None:
     return getattr(triton, "__version__", None)
 
 
+@functools.cache
 def _driver_version() -> str | None:
-    try:
-        raw = torch._C._cuda_getDriverVersion()  # type: ignore[attr-defined]
-    except Exception:
-        raw = None
-    if isinstance(raw, int) and raw > 0:
-        return f"{raw // 1000}.{(raw % 1000) // 10}"
+    """The NVIDIA driver release, e.g. ``550.54.15``, from ``nvidia-smi``.
+
+    PyTorch only exposes the CUDA driver API version (``12.4``), which many
+    driver releases share, so two machines on different drivers would look
+    identical.
+    """
     if shutil.which("nvidia-smi") is None:
         return None
     try:

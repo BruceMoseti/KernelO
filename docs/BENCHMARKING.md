@@ -13,7 +13,7 @@ carries:
 | --- | --- |
 | GPU name, compute capability, SM count, VRAM | `torch.cuda.get_device_properties` |
 | CUDA version | `torch.version.cuda` |
-| Driver version | `torch._C._cuda_getDriverVersion`, falling back to `nvidia-smi` |
+| NVIDIA driver version (e.g. 550.54.15) | `nvidia-smi`; PyTorch only exposes the CUDA driver API version, which many driver releases share |
 | PyTorch, Triton, Python versions | the installed packages |
 | Platform, hostname, UTC timestamp | the host |
 | dtype, tensor shapes, kernel configuration | the problem and config descriptors |

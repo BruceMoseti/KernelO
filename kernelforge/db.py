@@ -29,7 +29,7 @@ from kernelforge.runtime.env import Environment
 from kernelforge.testing import VerificationResult
 from kernelforge.tuning.config import KernelConfig, Problem
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_DB_PATH = Path("results/kernelforge.db")
 
 _SCHEMA = """
