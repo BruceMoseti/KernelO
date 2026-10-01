@@ -257,7 +257,8 @@ def test_best_config_is_written_to_the_cache(tmp_path):
     tuner = Tuner(warmup=1, iterations=2, flush_l2=False, cache=cache)
     result = tuner.tune(_FakeOperator(), PROBLEM, device="cpu")
 
-    stored = cache.get(PROBLEM, result.environment.device_key)
+    env = result.environment
+    stored = cache.get(PROBLEM, env.device_key, env.triton_version)
     assert stored == result.best_config
     entry = ConfigCache(tmp_path / "configs.json").entries()[0]
     assert entry.candidates_tested == result.tested

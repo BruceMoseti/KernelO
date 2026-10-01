@@ -334,6 +334,7 @@ class Tuner:
             self.cache.put(
                 result.problem,
                 env.device_key,
+                env.triton_version,
                 result.best.config,
                 median_us=result.best.timing.median_us if result.best.timing else None,
                 timestamp=env.timestamp,

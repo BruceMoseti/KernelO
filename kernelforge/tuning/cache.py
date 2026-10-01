@@ -4,7 +4,7 @@ Tuning a GEMM shape costs tens of seconds of compiling and benchmarking. A
 serving process cannot pay that on every startup, so the winning configuration
 is written out keyed by
 
-    device -> operation -> dtype -> shape
+    device -> Triton version -> operation -> dtype -> shape
 
 and a later run with an identical problem on an identical device reuses it
 instead of re-tuning. This is the piece that turns the tuner into something a
@@ -16,6 +16,12 @@ bandwidth, so the best tile for one is not the best tile for the other. The
 key uses the full board name plus the architecture, which means a cache file
 copied to a different machine misses rather than silently serving a
 configuration tuned for other hardware.
+
+**Why the Triton version is part of the key.** The compiler generates the code
+that was measured, so a ranking made under one Triton release does not carry
+over to another. After an upgrade the cache misses: dispatch falls back to
+the operator default and ``kernelforge tune`` searches again, instead of either
+reusing a configuration that was never verified with the new compiler.
 """
 
 from __future__ import annotations
@@ -29,7 +35,7 @@ from typing import Any
 
 from kernelforge.tuning.config import KernelConfig, Problem
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 
 
 def default_cache_path() -> Path:
@@ -42,6 +48,7 @@ def default_cache_path() -> Path:
 @dataclass(frozen=True)
 class CacheEntry:
     device_key: str
+    triton_version: str
     operation: str
     dtype: str
     shape_key: str
@@ -54,8 +61,8 @@ class CacheEntry:
         params = ", ".join(f"{k}={v}" for k, v in self.config.as_dict().items())
         latency = f"{self.median_us:.1f} us" if self.median_us is not None else "unmeasured"
         return (
-            f"{self.device_key}  {self.operation:<13} {self.dtype:<5} "
-            f"{self.shape_key:<22} {latency:>12}  {params}"
+            f"{self.device_key}  Triton {self.triton_version}  {self.operation:<13} "
+            f"{self.dtype:<5} {self.shape_key:<22} {latency:>12}  {params}"
         )
 
 
@@ -94,10 +101,14 @@ class ConfigCache:
             Path(tmp).unlink(missing_ok=True)
             raise
 
-    def get(self, problem: Problem, device_key: str) -> KernelConfig | None:
+    def get(
+        self, problem: Problem, device_key: str, triton_version: str | None
+    ) -> KernelConfig | None:
+        # str(): JSON keys are strings, and None (no Triton) must survive a reload.
         node = (
             self._data["entries"]
             .get(device_key, {})
+            .get(str(triton_version), {})
             .get(problem.operation, {})
             .get(problem.dtype_name, {})
             .get(problem.shape_key)
@@ -110,6 +121,7 @@ class ConfigCache:
         self,
         problem: Problem,
         device_key: str,
+        triton_version: str | None,
         config: KernelConfig,
         *,
         median_us: float | None = None,
@@ -118,6 +130,7 @@ class ConfigCache:
     ) -> None:
         entries = self._data["entries"]
         node = entries.setdefault(device_key, {})
+        node = node.setdefault(str(triton_version), {})
         node = node.setdefault(problem.operation, {})
         node = node.setdefault(problem.dtype_name, {})
         node[problem.shape_key] = {
@@ -130,23 +143,28 @@ class ConfigCache:
 
     def entries(self) -> list[CacheEntry]:
         out: list[CacheEntry] = []
-        for device_key, operations in self._data["entries"].items():
-            for operation, dtypes in operations.items():
-                for dtype, shapes in dtypes.items():
-                    for shape_key, payload in shapes.items():
-                        out.append(
-                            CacheEntry(
-                                device_key=device_key,
-                                operation=operation,
-                                dtype=dtype,
-                                shape_key=shape_key,
-                                config=KernelConfig(operation, **payload["config"]),
-                                median_us=payload.get("median_us"),
-                                timestamp=payload.get("timestamp", ""),
-                                candidates_tested=payload.get("candidates_tested"),
+        for device_key, versions in self._data["entries"].items():
+            for triton_version, operations in versions.items():
+                for operation, dtypes in operations.items():
+                    for dtype, shapes in dtypes.items():
+                        for shape_key, payload in shapes.items():
+                            out.append(
+                                CacheEntry(
+                                    device_key=device_key,
+                                    triton_version=triton_version,
+                                    operation=operation,
+                                    dtype=dtype,
+                                    shape_key=shape_key,
+                                    config=KernelConfig(operation, **payload["config"]),
+                                    median_us=payload.get("median_us"),
+                                    timestamp=payload.get("timestamp", ""),
+                                    candidates_tested=payload.get("candidates_tested"),
+                                )
                             )
-                        )
-        return sorted(out, key=lambda e: (e.device_key, e.operation, e.dtype, e.shape_key))
+        return sorted(
+            out,
+            key=lambda e: (e.device_key, e.triton_version, e.operation, e.dtype, e.shape_key),
+        )
 
     def clear(self) -> int:
         removed = len(self.entries())
