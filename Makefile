@@ -15,7 +15,7 @@ DTYPE ?= fp16
 SUITE ?= sweep
 
 .DEFAULT_GOAL := help
-.PHONY: help install install-cpu test test-gpu test-all test-slow compile-check \
+.PHONY: help install install-cpu test test-kernels test-gpu test-all test-slow compile-check \
         lint format check env tune tune-decode explain bench compare profile \
         report experiments cache clean
 
@@ -34,6 +34,10 @@ install-cpu: ## Install with CPU PyTorch, for machines without a GPU
 # --- verification --------------------------------------------------------
 test: ## Run the CPU-safe suite (no GPU required)
 	$(PYTEST) -m "not gpu" -q
+
+test-kernels: ## Run the kernel suites on CPU through Triton's interpreter (no GPU required)
+	TRITON_INTERPRET=1 $(PYTEST) tests/test_matmul.py tests/test_fused_linear.py \
+		tests/test_rmsnorm.py tests/test_softmax_and_vector_add.py -q
 
 test-gpu: ## Run only the tests that require a CUDA device
 	$(PYTEST) -m gpu -q

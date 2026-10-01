@@ -226,8 +226,10 @@ lanes cannot contaminate valid ones; and the epilogue's store mask discards
 them. Only the K axis needs a real mask, because a short final K step must
 contribute *zero* rather than wrapped data. The payoff is no M/N masking in the
 inner loop at all. I reasoned it through by hand for `M=1`, `N=1` and `K=1`,
-and the 88 GPU-gated tests in `test_matmul.py` exercise it over primes,
-one-off-a-tile sizes and degenerate rows -- though none of them has run.
+and the 88 tests in `test_matmul.py` exercise it over primes,
+one-off-a-tile sizes and degenerate rows. CI runs 56 of them on CPU through
+Triton's interpreter; the bf16 cases and the largest shapes need a GPU and have
+not run.
 
 ---
 
@@ -345,7 +347,8 @@ quoting TFLOP/s for RMSNorm would be meaningless.
 ## 9. How I tested it
 
 482 tests, organised by what they *need* rather than by layer: 189 run on a
-CPU-only machine, 293 are GPU-gated and skip with a stated reason.
+CPU-only machine, 221 more execute the Triton kernels there through Triton's
+interpreter, and 72 are GPU-gated and skip with a stated reason.
 
 **The structural guarantee.** The property that matters most — an incorrect
 configuration is never ranked — is tested without a GPU, by driving the tuner
@@ -381,9 +384,11 @@ against the reference, not just the shipped default.
   false. The aggregate answer is what matters, so it is one subprocess; the
   per-module bisect runs only to name the offender on failure.
 
-**What is honestly untested:** every GPU execution path. 293 tests, all Triton
+**What is honestly untested:** every GPU execution path. 72 tests, all Triton
 launch behaviour, the ATen launch site of the CUDA extension, the Nsight
-integration and all profiling were written but never run. The compile checks
+integration and all profiling were written but never run. The other 221 kernel
+tests run on CPU through Triton's interpreter, which checks a kernel's
+arithmetic and masking but not how it behaves on a GPU. The compile checks
 substantially de-risk the kernel *bodies*; they say nothing about launch-time
 behaviour, and nothing in this repository claims otherwise.
 
@@ -606,7 +611,7 @@ persists results with provenance, and caches across processes. I kept Triton's
 autotuner as a *measured baseline* rather than asserting the difference.
 
 **15. What is the biggest weakness of this project?** No measured numbers, and
-every GPU execution path untested — 293 tests written and never run. I would not
+every GPU execution path untested — 72 tests written and never run. I would not
 soften that. What I would add is that the constraint produced a verification
 strategy I would now use even with hardware available, because PTX-level
 assertions catch things a passing numerical test does not: that a kernel reached
