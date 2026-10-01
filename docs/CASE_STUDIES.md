@@ -166,7 +166,7 @@ kernelforge profile matmul --m 1 --n 11008 --k 4096 --backend nsight \
 ### Results
 
 Results table to be filled from the `cfg_num_warps` column of
-`reports/matmul.csv` at fixed tile, one row per (shape, `num_warps`) pair, with
+`results/matmul_fp16.csv` at fixed tile, one row per (shape, `num_warps`) pair, with
 the dominant warp stall reason from `WarpStateStats` alongside.
 
 **Which prediction held, and which did not:** to be written from the
