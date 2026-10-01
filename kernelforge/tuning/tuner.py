@@ -203,14 +203,13 @@ class Tuner:
         # pin fp32 to IEEE, and the comparison would be between precisions
         # instead of between kernels. For fp16 and bf16 this changes nothing.
         with exact_fp32_matmul():
-            reference = operator.reference(*inputs)
-            # Candidates are held elementwise to a float64 reference; the
-            # baselines are other implementations and compare against `reference`.
-            exact = operator.exact_reference(*inputs)
+            # Candidates are held elementwise to a float64 reference. The
+            # baselines are other implementations, compared with PyTorch's own.
+            reference = operator.exact_reference(*inputs)
 
             self.log(f"Verifying candidates... ({len(candidates)} to check)")
             outcomes = [
-                self._verify_candidate(operator, config, inputs, exact, problem)
+                self._verify_candidate(operator, config, inputs, reference, problem)
                 for config in candidates
             ]
             passed = [o for o in outcomes if o.ok]
@@ -220,7 +219,9 @@ class Tuner:
             timed = [self._time_candidate(operator, o, inputs, resolved) for o in outcomes]
 
             baselines = (
-                self._measure_baselines(operator, problem, inputs, reference, resolved)
+                self._measure_baselines(
+                    operator, problem, inputs, operator.reference(*inputs), resolved
+                )
                 if self.measure_baselines
                 else {}
             )
