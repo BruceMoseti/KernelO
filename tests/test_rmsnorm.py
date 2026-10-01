@@ -1,7 +1,9 @@
 """RMSNorm correctness.
 
-Marked ``gpu`` throughout. Beyond the usual awkward row widths, two things get
-specific attention:
+Every test here also runs on CPU through Triton's interpreter
+(``TRITON_INTERPRET=1``), which is how CI executes them; bf16 included, because
+the kernel converts to fp32 before any arithmetic. Beyond the usual awkward row
+widths, two things get specific attention:
 
 * **The fp32 reduction.** A kernel that accumulates the sum of squares in the
   input dtype gives visibly wrong answers for wide rows in fp16, so there is a
@@ -21,8 +23,6 @@ from kernelforge.testing import assert_verified
 from kernelforge.tuning.config import KernelConfig, Problem
 
 pytest.importorskip("triton")
-
-pytestmark = pytest.mark.gpu
 
 DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
