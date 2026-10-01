@@ -29,6 +29,8 @@ exponential to ``+inf`` and the result to zero, which is the correct limit.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import torch
 import triton
 import triton.language as tl
@@ -203,7 +205,9 @@ class FusedLinearOperator(Operator):
             dims["M"], dims["N"], dims["K"], problem.itemsize, fused=True
         )
 
-    def baselines(self, problem: Problem, inputs):
+    def baselines(
+        self, problem: Problem, inputs: tuple[torch.Tensor, ...]
+    ) -> dict[str, Callable[[], torch.Tensor]]:
         x, w, bias = inputs
         return {
             "torch_eager": lambda: linear_gelu_reference(x, w, bias),

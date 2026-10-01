@@ -37,6 +37,11 @@ class DeviceCaps:
     max_threads_per_sm: int
     warp_size: int
     l2_cache_bytes: int
+    #: False when these values were not read from an attached device. Filters
+    #: reason over whichever properties they are given, so anything reporting
+    #: their output has to say which device it was reasoning about -- a
+    #: candidate count derived from assumed properties is not a measurement.
+    measured: bool = True
 
     @property
     def arch(self) -> str:
@@ -59,8 +64,9 @@ class DeviceCaps:
 
 # Values for an A100-80GB, used only when a caller asks for capabilities while
 # no CUDA device is attached (documentation builds, filter unit tests, CI).
+# `measured=False` so that output derived from them can label itself.
 _FALLBACK_CAPS = DeviceCaps(
-    name="cpu-fallback-sm80",
+    name="A100-SXM4-80GB (assumed)",
     compute_capability="8.0",
     total_memory_bytes=80 * 1024**3,
     sm_count=108,
@@ -70,6 +76,7 @@ _FALLBACK_CAPS = DeviceCaps(
     max_threads_per_sm=2048,
     warp_size=32,
     l2_cache_bytes=40 * 1024 * 1024,
+    measured=False,
 )
 
 

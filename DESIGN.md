@@ -39,9 +39,9 @@ That is a deliberate departure from the obvious schema. Fixed columns cannot
 represent an RMSNorm config, and adding a nullable column per operator
 parameter turns the table into a sparse matrix that every query must
 special-case. The digest gives configs a stable identity for joins; SQLite's
-`json_extract` retrieves a single parameter when a report needs one; and the
-report code expands the JSON into DataFrame columns, which is where that shape
-is actually convenient.
+SQLite's `json_extract` remains available should a query ever need a predicate
+on one parameter, though nothing here uses it yet; the report code expands the
+JSON into DataFrame columns, which is where that shape is actually convenient.
 
 ## Filters are hardware rules; the budget bounds cost
 
@@ -146,8 +146,12 @@ however high `num_stages` is — confirmed by inspecting the TTGIR, and unchange
 by supplying full pointer-divisibility hints. So the CPU test checks the
 single-buffer tile footprint against the compiler's own figure, and the
 `num_stages` factor is checked against a real launch in
-`test_shared_memory_model_matches_the_pipeliner`. Describing the first test as
-validating the whole model would have been wrong.
+`tests/test_kernels_gpu.py`, which asserts both that the estimate upper-bounds
+a real allocation and that multi-buffering actually happens for at least one
+multi-stage configuration. Describing the CPU test as validating the whole
+model would have been wrong, and an upper-bound assertion alone would not have
+checked the `num_stages` factor either -- a single-buffer allocation satisfies
+it trivially.
 
 The same approach covers the handwritten CUDA kernel. `clang++` in CUDA mode
 compiles `__global__` code to PTX given only CUDA's headers and libdevice,

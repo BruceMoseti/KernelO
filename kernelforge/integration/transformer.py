@@ -100,7 +100,7 @@ class TransformerBlock(nn.Module):
         self.mlp_down = nn.Linear(intermediate, hidden, bias=False, **factory)
 
     # --- kernel selection ----------------------------------------------
-    def _config_for(self, operation: str, rows: int, cols: int, dtype: torch.dtype):
+    def _config_for(self, operation: str, rows: int, cols: int, dtype: torch.dtype) -> KernelConfig:
         key = (operation, rows, cols)
         if key not in self._selected:
             if operation == "rmsnorm":

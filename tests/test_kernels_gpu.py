@@ -60,41 +60,48 @@ def _launch_metadata(config: KernelConfig, device, dtype=torch.float16):
     return compiled[0].metadata
 
 
-def test_shared_memory_model_matches_the_pipeliner(device):
-    """The search space's shared-memory estimate against a real launch.
+#: (BLOCK_M, BLOCK_N, BLOCK_K, num_warps, num_stages)
+_SHARED_MEMORY_CASES = (
+    (64, 64, 32, 4, 2),
+    (64, 64, 32, 4, 4),
+    (128, 128, 32, 8, 3),
+)
 
-    The estimate is ``num_stages * BLOCK_K * (BLOCK_M + BLOCK_N) * itemsize``,
-    which is what the pipeliner needs to keep ``num_stages`` operand tiles in
-    flight. The ahead-of-time compile test cannot check the ``num_stages``
-    factor because the standalone compiler does not run the pipeliner; this
-    can.
 
-    Allowed to come out lower than the estimate: Triton may decide a loop is
-    not worth pipelining. Allowed a 25% overshoot too, because the operand
-    layout is padded for swizzling -- the CPU compile test measures that
-    padding directly and sees up to 2x on the single-buffer footprint. Beyond
-    that margin the filter would be admitting configurations whose real
-    shared-memory demand it has underestimated, which costs tuning time in
-    OutOfResources failures.
+def _gemm_config(block_m, block_n, block_k, warps, stages) -> KernelConfig:
+    return KernelConfig(
+        "matmul",
+        BLOCK_M=block_m,
+        BLOCK_N=block_n,
+        BLOCK_K=block_k,
+        GROUP_M=8,
+        num_warps=warps,
+        num_stages=stages,
+    )
+
+
+def test_shared_memory_estimate_bounds_real_usage(device):
+    """The filter's estimate must be an upper bound on what a launch allocates.
+
+    This is the property the filter actually needs, and it is one-sided on
+    purpose. The estimate is used to reject configurations *before* compiling
+    them: if it over-estimates, the filter is conservative and costs a few
+    candidates; if it under-estimates, the filter admits configurations the
+    device cannot run and the budget is spent on `OutOfResources` failures.
+
+    The 25% headroom is for the swizzled operand layout, whose padding the CPU
+    compile test measures directly (up to 2x on the single-buffer footprint).
+
+    Note what this does *not* check: that the allocation scales with
+    ``num_stages``. A single-buffer allocation satisfies an upper bound
+    trivially. That factor is checked separately below.
     """
     from kernelforge.tuning.search import MatmulSearchSpace
 
     space = MatmulSearchSpace()
     problem = Problem.create("matmul", "fp16", M=512, N=512, K=512)
-    for block_m, block_n, block_k, warps, stages in [
-        (64, 64, 32, 4, 2),
-        (64, 64, 32, 4, 4),
-        (128, 128, 32, 8, 3),
-    ]:
-        config = KernelConfig(
-            "matmul",
-            BLOCK_M=block_m,
-            BLOCK_N=block_n,
-            BLOCK_K=block_k,
-            GROUP_M=8,
-            num_warps=warps,
-            num_stages=stages,
-        )
+    for case in _SHARED_MEMORY_CASES:
+        config = _gemm_config(*case)
         estimate = space.shared_memory_bytes(config, problem)
         actual = int(_launch_metadata(config, device).shared)
         assert actual <= estimate * 1.25, (
@@ -102,14 +109,52 @@ def test_shared_memory_model_matches_the_pipeliner(device):
         )
 
 
+def test_pipeliner_multi_buffers_so_the_num_stages_factor_is_real(device):
+    """At least one multi-stage configuration must allocate past one buffer.
+
+    The ``num_stages`` factor in the filter's estimate exists because Triton's
+    pipeliner keeps that many operand tiles in flight. The ahead-of-time
+    compile test cannot see it -- the standalone compiler does not run the
+    pipeliner at all, which is a documented finding, not an assumption -- so
+    this is the only place the factor is confirmed to correspond to anything.
+
+    Phrased as "at least one" rather than "every" because Triton may
+    legitimately decline to pipeline a particular loop. If *none* of these
+    configurations multi-buffers, the factor is fiction on this Triton version
+    and the filter over-estimates every GEMM candidate by up to 4x -- which
+    would be worth knowing, and is what this test would report.
+    """
+    multi_buffered = []
+    for case in _SHARED_MEMORY_CASES:
+        block_m, block_n, block_k, _, stages = case
+        if stages < 2:
+            continue
+        single_buffer = block_k * (block_m + block_n) * 2  # fp16
+        actual = int(_launch_metadata(_gemm_config(*case), device).shared)
+        if actual > single_buffer * 1.25:
+            multi_buffered.append((case, actual, single_buffer))
+
+    assert multi_buffered, (
+        "no multi-stage configuration allocated more than a single operand "
+        "buffer; the num_stages factor in the shared-memory model does not "
+        "correspond to this Triton version's behaviour"
+    )
+
+
 def test_tuning_beats_or_matches_the_untuned_default(device):
-    """Tuning must not make things worse.
+    """The tuned winner must not be slower than the untuned default.
 
     A weak claim on purpose: which configuration wins depends on the GPU, so
     asserting a particular speedup would be asserting a property of the
-    hardware. What must hold on any device is that searching a space that
-    contains the default never returns something slower than it, beyond
-    measurement noise.
+    hardware rather than of this code.
+
+    Note what is being compared. `DEFAULT_CONFIG` (32x32x32) is *not* in the
+    searched budget -- the priority function ranks it below larger tiles for a
+    1024-cubed problem -- so this is not "the search returns its own input or
+    better". It is the independently measured `triton_baseline`, which runs
+    `DEFAULT_CONFIG`, against the best of 12 searched candidates. The 5%
+    tolerance absorbs measurement noise; this is the most likely test in the
+    suite to need widening on noisy hardware.
     """
     from kernelforge.kernels import get_operator
     from kernelforge.tuning.tuner import Tuner

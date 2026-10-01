@@ -84,14 +84,14 @@ kernelforge profile matmul --m 4096 --n 4096 --k 4096 --backend nsight \
 
 ### Results
 
-| Tile | num_warps | Median (ms) | TFLOP/s | Occupancy | SM % of peak | DRAM % of peak | Regs/thread | Smem (KiB) |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 32×32 | 4 | | | | | | | |
-| 64×64 | 4 | | | | | | | |
-| 128×128 | 8 | | | | | | | |
+Results table to be filled from `reports/matmul.csv` and the `ncu` output, one
+row per tile at `4096³` and one per tile at `256²`, with columns: median
+latency, TFLOP/s, achieved occupancy, SM and DRAM throughput as a percentage of
+peak, registers per thread, and shared memory per block.
 
-**Which prediction held, and which did not:** _(to be written from the
-measurements; state explicitly if the ordering came out differently.)_
+**Which prediction held, and which did not:** to be written from the
+measurements, stating explicitly where the outcome differed from the prediction
+above.
 
 ---
 
@@ -165,20 +165,13 @@ kernelforge profile matmul --m 1 --n 11008 --k 4096 --backend nsight \
 
 ### Results
 
-| Shape | num_warps | Median (ms) | TFLOP/s | Occupancy | Dominant stall | Regs/thread |
-| --- | --- | --- | --- | --- | --- | --- |
-| 4096×4096×4096 | 2 | | | | | |
-| 4096×4096×4096 | 4 | | | | | |
-| 4096×4096×4096 | 8 | | | | | |
-| 1×11008×4096 | 2 | | | | | |
-| 1×11008×4096 | 4 | | | | | |
-| 1×11008×4096 | 8 | | | | | |
-| 4096×4096×256 | 2 | | | | | |
-| 4096×4096×256 | 4 | | | | | |
-| 4096×4096×256 | 8 | | | | | |
+Results table to be filled from the `cfg_num_warps` column of
+`reports/matmul.csv` at fixed tile, one row per (shape, `num_warps`) pair, with
+the dominant warp stall reason from `WarpStateStats` alongside.
 
-**Which prediction held, and which did not:** _(to be written from the
-measurements.)_
+**Which prediction held, and which did not:** to be written from the
+measurements, stating explicitly where the outcome differed from the prediction
+above.
 
 ---
 
@@ -208,8 +201,10 @@ of avoided round trips.
 
 So:
 
-1. **Launch count drops from 3 to 1.** This is structural, not statistical, and
-   is asserted in `test_fusion_reduces_the_kernel_launch_count`.
+1. **The fused path is one launch; the unfused path is at least three.**
+   Structural rather than statistical, and asserted in
+   `test_fusion_reduces_the_kernel_launch_count`. Not pinned to exactly three,
+   because cuBLAS may split a GEMM across kernels.
 2. **DRAM traffic drops by about `4*M*N*itemsize`.** Measurable directly in
    `MemoryWorkloadAnalysis`.
 3. **Latency improves by less than the traffic ratio suggests.** The GEMM reads
@@ -255,18 +250,18 @@ kernelforge profile fused_linear --m 4096 --n 11008 --k 4096 --backend nsight \
 
 ### Results
 
-| Implementation | Launches / call | Median (ms) | DRAM read (MiB) | DRAM write (MiB) | vs eager |
-| --- | --- | --- | --- | --- | --- |
-| unfused (eager) | 3 | | | | 1.00x |
-| `torch.compile` | | | | | |
-| KernelForge fused | 1 | | | | |
+Results table to be filled from `kernelforge profile fused_linear` and the
+`ncu` memory section: launches per call, median latency, and DRAM read/write
+bytes for the unfused sequence, `torch.compile`, and the fused kernel.
 
-Predicted output-traffic saving at 4096×11008 fp16: `4 × 4096 × 11008 × 2 B` = 344 MiB.
-Measured saving: _(fill in.)_
+Predicted output-traffic saving at 4096×11008 fp16: `4 × 4096 × 11008 × 2 B`
+= 344 MiB, against total traffic of 548 MiB unfused and 204 MiB fused. This is
+the one number in this document that is exact and hardware-independent, so it
+is the easiest of the three predictions to falsify.
 
-**Which prediction held, and which did not:** _(to be written from the
-measurements. In particular: did the latency gain come in below the traffic
-ratio, as predicted, and did `torch.compile` close the gap?)_
+**Which prediction held, and which did not:** to be written from the
+measurements, stating explicitly where the outcome differed from the prediction
+above.
 
 ---
 
@@ -285,9 +280,7 @@ bounded by the share of block time those operators held, and the expected
 finding is that it is much smaller than the operator-level speedups. That is
 Amdahl's law, and it is the correct conclusion rather than a disappointing one.
 
-| Backend | Block median (ms) | vs PyTorch |
-| --- | --- | --- |
-| `torch` | | 1.00x |
-| `kernelforge` | | |
+Results to be filled from `kernelforge compare transformer`: block median
+latency for each backend, against the operator-level speedups measured above.
 
-Operator-level speedups measured above, for comparison: _(fill in.)_
+The gap between those two numbers is the point of the measurement.

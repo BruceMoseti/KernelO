@@ -17,8 +17,12 @@ import json
 from dataclasses import dataclass, field
 from math import prod
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from kernelforge.db import ResultsDB
+
+if TYPE_CHECKING:  # pandas is an optional extra; see `_require_dependencies`
+    from pandas import DataFrame
 
 #: Order in which implementations appear in tables and legends.
 LABEL_ORDER = (
@@ -58,7 +62,7 @@ class ReportArtifacts:
         return "\n".join(lines)
 
 
-def _require_dependencies():
+def _require_dependencies() -> tuple[Any, Any]:
     try:
         import matplotlib
         import pandas
@@ -72,7 +76,7 @@ def _require_dependencies():
     return pandas, plt
 
 
-def _frame(pandas, db: ResultsDB):
+def _frame(pandas: Any, db: ResultsDB) -> DataFrame:
     """Correct, timed rows as a DataFrame, with config parameters expanded."""
     rows = [r for r in db.rows() if r["median_us"] is not None and r["correct"] != 0]
     frame = pandas.DataFrame(rows)
@@ -85,7 +89,7 @@ def _frame(pandas, db: ResultsDB):
     return frame
 
 
-def _best_per_label(frame):
+def _best_per_label(frame: DataFrame) -> DataFrame:
     """Fastest row for each (operation, dtype, shape, label).
 
     Ordered by problem size rather than by the shape string: sorting
@@ -96,13 +100,13 @@ def _best_per_label(frame):
     return frame.loc[index].sort_values(["operation", "dtype", "size"]).copy()
 
 
-def _ordered_labels(labels) -> list[str]:
+def _ordered_labels(labels: Any) -> list[str]:
     present = set(labels)
     ranked = [label for label in LABEL_ORDER if label in present]
     return ranked + sorted(present - set(ranked))
 
 
-def _with_axis_labels(frame):
+def _with_axis_labels(frame: DataFrame) -> DataFrame:
     """Add the x-axis key, which has to distinguish dtypes.
 
     A shape alone is not a unique series: the same ``1024x1024x1024`` may have
@@ -115,12 +119,14 @@ def _with_axis_labels(frame):
     return frame.assign(axis_key=frame["shape_key"])
 
 
-def _axis_order(frame) -> list[str]:
+def _axis_order(frame: DataFrame) -> list[str]:
     pairs = frame[["axis_key", "size", "dtype"]].drop_duplicates().sort_values(["size", "dtype"])
     return list(pairs["axis_key"])
 
 
-def _grouped_bars(plt, frame, *, value, ylabel, title, path: Path) -> Path:
+def _grouped_bars(
+    plt: Any, frame: DataFrame, *, value: str, ylabel: str, title: str, path: Path
+) -> Path:
     frame = _with_axis_labels(frame)
     labels = _ordered_labels(frame["label"])
     shapes = _axis_order(frame)
@@ -143,7 +149,7 @@ def _grouped_bars(plt, frame, *, value, ylabel, title, path: Path) -> Path:
     return path
 
 
-def _tuning_heatmap(plt, frame, path: Path) -> Path | None:
+def _tuning_heatmap(plt: Any, frame: DataFrame, path: Path) -> Path | None:
     """Median latency over the BLOCK_M x BLOCK_N plane for one GEMM shape.
 
     Uses the (shape, dtype) pair with the most measured candidates, which is
@@ -207,7 +213,7 @@ def _environment_section(db: ResultsDB) -> list[str]:
     return lines
 
 
-def _methodology_warnings(frame) -> list[str]:
+def _methodology_warnings(frame: DataFrame) -> list[str]:
     """Settings that make rows in this database incomparable with each other."""
     warnings = []
     if frame["flushed_l2"].nunique() > 1:
@@ -225,7 +231,7 @@ def _methodology_warnings(frame) -> list[str]:
     return warnings
 
 
-def _summary_table(frame, operation: str) -> list[str]:
+def _summary_table(frame: DataFrame, operation: str) -> list[str]:
     best = _best_per_label(frame[frame["operation"] == operation])
     if best.empty:
         return []

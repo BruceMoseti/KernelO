@@ -15,9 +15,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Triton ships with the CUDA builds of PyTorch on Linux. It is declared as an
-# extra so that `pip install kernelforge` still works on machines where the
-# wheel is unavailable (macOS, aarch64) and only the CPU-side tooling is needed.
+# Triton ships with the CUDA builds of PyTorch on Linux, so it is an extra
+# rather than a hard dependency: `pip install kernelforge` then still works on
+# machines where the wheel is unavailable (macOS, aarch64) and only the
+# CPU-side tooling is wanted. `make install-cpu` and CI both request it
+# explicitly, because the kernel compilation checks need Triton even though
+# they never launch anything.
 gpu = ["triton>=3.0"]
 report = ["pandas>=2.0", "matplotlib>=3.7"]
 dev = [

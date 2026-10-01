@@ -16,6 +16,8 @@ which is the whole source of the speedup on a memory-bound operation.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import torch
 import triton
 import triton.language as tl
@@ -144,7 +146,9 @@ class SoftmaxOperator(Operator):
     def is_memory_bound(self) -> bool:
         return True
 
-    def baselines(self, problem: Problem, inputs):
+    def baselines(
+        self, problem: Problem, inputs: tuple[torch.Tensor, ...]
+    ) -> dict[str, Callable[[], torch.Tensor]]:
         (x,) = inputs
         return {
             "torch_eager": lambda: torch.softmax(x, dim=-1),

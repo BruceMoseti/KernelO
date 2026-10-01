@@ -24,6 +24,8 @@ Two numerical decisions:
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import torch
 import triton
 import triton.language as tl
@@ -184,7 +186,9 @@ class RMSNormOperator(Operator):
     def is_memory_bound(self) -> bool:
         return True
 
-    def baselines(self, problem: Problem, inputs):
+    def baselines(
+        self, problem: Problem, inputs: tuple[torch.Tensor, ...]
+    ) -> dict[str, Callable[[], torch.Tensor]]:
         x, gamma = inputs
         out = {
             "torch_eager": lambda: rmsnorm_reference(x, gamma),

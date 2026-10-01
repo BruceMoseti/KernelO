@@ -10,7 +10,7 @@ What these tests cannot see: anything that depends on running. The standalone
 compile entry point does not run the software pipeliner, so the shared-memory
 figures here are single-buffer and the ``num_stages`` factor in the search
 space's estimate is checked on a GPU instead -- see
-``tests/test_kernels_gpu.py::test_shared_memory_model_matches_the_pipeliner``.
+``tests/test_kernels_gpu.py``.
 """
 
 from __future__ import annotations

@@ -6,8 +6,10 @@
 # results database and is rendered by the final report step; nothing is
 # transcribed by hand.
 #
-# Takes roughly half an hour on a single modern GPU, most of it compiling
-# tuning candidates. Use SUITE=smoke for a quick pass.
+# Runs 12 tuning sweeps, 5 benchmark suites, a profile pass and two transformer
+# comparisons, so it is long -- most of it compiling tuning candidates. The
+# runtime has not been measured on real hardware, so no estimate is quoted
+# here; use SUITE=smoke for a quick pass.
 
 set -euo pipefail
 
