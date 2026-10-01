@@ -234,13 +234,15 @@ def command_benchmark(args: argparse.Namespace) -> int:
             inputs = operator.make_inputs(problem, device)
             with exact_fp32_matmul():
                 reference = operator.reference(*inputs)
+                exact = operator.exact_reference(*inputs)
                 selection = select_config(operator, problem, cache=cache, device=device)
                 runnable = dict(operator.baselines(problem, inputs))
                 runnable["kernelforge"] = lambda c=selection.config, i=inputs: operator.run(c, *i)
 
                 for label, fn in runnable.items():
+                    expected = exact if label == "kernelforge" else reference
                     try:
-                        check = verify(reference, fn(), dtype=problem.dtype)
+                        check = verify(expected, fn(), dtype=problem.dtype)
                     except Exception as exc:
                         print(f"{problem.shape_key:<24}{label:<18}  failed: {type(exc).__name__}")
                         continue
@@ -310,6 +312,7 @@ def command_compare(args: argparse.Namespace) -> int:
     cache = _open_cache(args)
     with exact_fp32_matmul():
         reference = operator.reference(*inputs)
+        exact = operator.exact_reference(*inputs)
         selection = select_config(operator, problem, cache=cache, device=device)
         print(f"config: {selection.describe()}")
         print(f"        {', '.join(f'{k}={v}' for k, v in selection.config.as_dict().items())}")
@@ -320,7 +323,9 @@ def command_compare(args: argparse.Namespace) -> int:
         print(_rule("Comparison"))
         rows = []
         for label, fn in runnable.items():
-            check = verify(reference, fn(), dtype=problem.dtype)
+            check = verify(
+                exact if label == "kernelforge" else reference, fn(), dtype=problem.dtype
+            )
             if not check.passed:
                 print(f"{label}: INCORRECT ({check.reason})")
                 continue

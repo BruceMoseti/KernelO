@@ -204,10 +204,13 @@ class Tuner:
         # instead of between kernels. For fp16 and bf16 this changes nothing.
         with exact_fp32_matmul():
             reference = operator.reference(*inputs)
+            # Candidates are held elementwise to a float64 reference; the
+            # baselines are other implementations and compare against `reference`.
+            exact = operator.exact_reference(*inputs)
 
             self.log(f"Verifying candidates... ({len(candidates)} to check)")
             outcomes = [
-                self._verify_candidate(operator, config, inputs, reference, problem)
+                self._verify_candidate(operator, config, inputs, exact, problem)
                 for config in candidates
             ]
             passed = [o for o in outcomes if o.ok]
