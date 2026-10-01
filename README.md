@@ -640,8 +640,8 @@ Tests designed to fail if a specific decision were reverted:
   magnitude (predicted from the formats, not yet observed);
 - the fp16 RMSNorm needs its fp32 reduction for an 8192-wide row, and the test
   asserts the naive fp16 reduction is measurably worse, so the test has teeth;
-- softmax survives logits of 60, which overflow fp16 `exp` without the max
-  subtraction;
+- softmax survives logits of 100, which overflow `exp` even in fp32 without
+  the max subtraction;
 - `gelu(xw + b)` is pinned apart from `gelu(xw) + b` by a zero-weight case;
 - the row kernels reject a non-contiguous last dimension rather than silently
   returning a wrong answer.

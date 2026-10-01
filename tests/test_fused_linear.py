@@ -141,9 +141,15 @@ def test_gelu_rewrite_matches_pytorch_across_the_whole_range(device):
     bias = torch.zeros(n, device=device, dtype=torch.float32)
 
     out = fused_linear_gelu(x, w, bias, config=config(32, 32, 32, 4, 2))
-    expected = F.gelu(x, approximate="tanh")
+    expected = F.gelu(x.double(), approximate="tanh")
     assert torch.isfinite(out).all(), "GELU produced non-finite values"
-    assert_verified(expected, out, dtype=torch.float32, threshold=1e-4)
+    # Beyond |x| = 8, GELU is 0 or x to within 1e-20. The curve is checked on
+    # its own because the bound's absolute term scales with rms(ref): next to
+    # tails of 1e4 it would allow an error of 0.1 on a negative lobe whose
+    # magnitude never exceeds 0.17.
+    curve = x.abs() <= 8.0
+    assert_verified(expected[curve], out[curve], dtype=torch.float32, context="GELU curve")
+    assert_verified(expected[~curve], out[~curve], dtype=torch.float32, context="GELU tails")
 
 
 def test_bias_is_added_before_the_activation(device):

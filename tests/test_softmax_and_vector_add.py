@@ -3,9 +3,9 @@
 Tests marked ``gpu`` need a CUDA device. The rest also run on CPU through
 Triton's interpreter (``TRITON_INTERPRET=1``), which is how CI executes them.
 
-Softmax gets a specific test for the numerical stability shift: without
-subtracting the row maximum, fp16 ``exp`` overflows above x ~ 11, which is an
-ordinary magnitude for an attention logit. The test feeds exactly that.
+Softmax gets a specific test for the numerical stability shift: the kernel
+exponentiates in fp32, so without subtracting the row maximum ``exp`` overflows
+above x ~ 88.7. The test feeds logits above that.
 """
 
 from __future__ import annotations
@@ -53,19 +53,20 @@ def test_softmax_across_awkward_shapes(shape, dtype, device):
     )
 
 
-def test_softmax_survives_logits_that_would_overflow_fp16(device):
+def test_softmax_survives_logits_that_would_overflow_fp32(device):
     """The reason for subtracting the row maximum.
 
-    fp16 tops out at 65504, so exp(x) overflows for x above about 11. These
-    logits reach 60, which the naive formulation turns into inf/inf = NaN.
+    The kernel exponentiates in fp32, where exp(x) overflows for x above about
+    88.7. These logits reach 100, which the naive formulation turns into
+    inf/inf = NaN.
     """
     from kernelforge.kernels.softmax import default_config, softmax
 
-    x = torch.full((4, 512), 60.0, device=device, dtype=torch.float16)
-    x[:, 0] = 80.0
+    x = torch.full((4, 512), 90.0, device=device, dtype=torch.float16)
+    x[:, 0] = 100.0
     out = softmax(x, config=default_config(512))
     assert torch.isfinite(out).all(), "softmax produced non-finite values"
-    assert_verified(torch.softmax(x, dim=-1), out, dtype=torch.float16)
+    assert_verified(torch.softmax(x.double(), dim=-1), out, dtype=torch.float16)
     assert torch.allclose(out.float().sum(dim=-1), torch.ones(4, device=device), atol=1e-2)
 
 

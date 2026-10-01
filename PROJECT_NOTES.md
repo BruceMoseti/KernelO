@@ -374,8 +374,8 @@ against the reference, not just the shipped default.
 - the fp16 RMSNorm needs its fp32 reduction for an 8192-wide row — and the test
   also asserts the naive fp16 reduction is measurably *worse*, so the test has
   teeth rather than merely passing;
-- softmax survives logits of 60, which overflow fp16 `exp` and produce NaN
-  without the max subtraction;
+- softmax survives logits of 100, which overflow `exp` even in fp32 and
+  produce NaN without the max subtraction;
 - `gelu(xw + b)` is pinned apart from `gelu(xw) + b` by a zero-weight case,
   which fixes the operation order;
 - `test_cpu_only_imports.py` imports the 13 CPU-side modules in a fresh
