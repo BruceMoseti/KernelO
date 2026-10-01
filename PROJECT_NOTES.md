@@ -508,10 +508,10 @@ candidate *i+1* out of the measurement of candidate *i*.
 **2. Why not `torch.allclose`?** It needs an absolute tolerance that depends on
 data magnitude, and a GEMM's output grows like `√K`. A tolerance tuned at
 `K=512` either rejects correct kernels at `K=8192` or passes broken ones at
-`K=128`. The scale-invariant `max|out−ref|/max|ref|` lets one threshold per
-dtype hold across every shape. Thresholds come from each format's output
-rounding (fp16 2⁻¹¹ ≈ 4.9e-4, bf16 2⁻⁸ ≈ 3.9e-3) with headroom for summation
-order.
+`K=128`. Candidates are checked elementwise against a float64 reference, within
+an ulp of the output format plus a floor scaled by the reference's RMS, which
+scales with the data. The earlier normalised `max|out−ref|/max|ref|` was scale
+invariant too, but it let a GEMM accumulating in fp16 through at `K ≤ 2048`.
 
 **3. What is TF32 and why did you disable it?** A 19-bit tensor-core format with
 a 10-bit mantissa, which PyTorch may use for fp32 matmuls on Ampere+ by default.

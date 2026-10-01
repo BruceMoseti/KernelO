@@ -38,6 +38,16 @@ class Operator(ABC):
     def reference(self, *inputs: torch.Tensor) -> torch.Tensor:
         """The PyTorch implementation this kernel must agree with."""
 
+    def exact_reference(self, *inputs: torch.Tensor) -> torch.Tensor:
+        """:meth:`reference` computed in float64 from the same inputs.
+
+        Upcasting is lossless and float64's own rounding is negligible, so this
+        is exact for the inputs the kernel received, and
+        :func:`~kernelforge.testing.verify` holds a kernel to an elementwise
+        bound against it.
+        """
+        return self.reference(*(t.to(torch.float64) for t in inputs))
+
     @abstractmethod
     def run(self, config: KernelConfig, *inputs: torch.Tensor) -> torch.Tensor:
         """Execute the Triton kernel with ``config``."""

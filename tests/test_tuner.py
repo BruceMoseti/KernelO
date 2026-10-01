@@ -138,6 +138,76 @@ def test_failed_candidates_carry_no_timing(tuned):
                 _ = outcome.median_ms
 
 
+MODE_FP32_ACCUMULATE = 0
+MODE_FP16_ACCUMULATE = 1
+
+
+class _GemmSpace(SearchSpace):
+    operation = "cpu_gemm"
+
+    def grid(self, problem: Problem) -> Iterator[KernelConfig]:
+        for mode in (MODE_FP32_ACCUMULATE, MODE_FP16_ACCUMULATE):
+            yield KernelConfig(self.operation, MODE=mode)
+
+    def reject_reason(self, config, problem, caps) -> str | None:
+        return None
+
+
+class _GemmOperator(Operator):
+    """An fp16 GEMM whose second configuration accumulates in fp16."""
+
+    name = "cpu_gemm"
+    config_order = ("MODE",)
+
+    def search_space(self) -> _GemmSpace:
+        return _GemmSpace()
+
+    def make_inputs(self, problem, device, *, seed=0):
+        gen = torch.Generator(device=device).manual_seed(seed)
+        dims = problem.dims_dict
+        a = torch.randn(dims["M"], dims["K"], device=device, generator=gen).to(problem.dtype)
+        b = torch.randn(dims["K"], dims["N"], device=device, generator=gen).to(problem.dtype)
+        return a, b
+
+    def reference(self, *inputs):
+        a, b = inputs
+        return torch.matmul(a, b)
+
+    def run(self, config, *inputs):
+        a, b = inputs
+        if config["MODE"] == MODE_FP32_ACCUMULATE:
+            return (a.float() @ b.float()).to(a.dtype)
+        acc = torch.zeros(a.shape[0], b.shape[1], dtype=a.dtype)
+        for k0 in range(0, a.shape[1], 16):
+            acc = (acc.float() + a[:, k0 : k0 + 16].float() @ b[k0 : k0 + 16].float()).to(a.dtype)
+        return acc
+
+    def default_config(self, problem):
+        return KernelConfig("cpu_gemm", MODE=MODE_FP32_ACCUMULATE)
+
+    def flops(self, problem):
+        dims = problem.dims_dict
+        return 2 * dims["M"] * dims["N"] * dims["K"]
+
+    def bytes_moved(self, problem):
+        dims = problem.dims_dict
+        return (dims["M"] + dims["N"]) * dims["K"] * problem.itemsize
+
+
+def test_a_candidate_accumulating_in_fp16_is_never_ranked():
+    """At K=1024 an fp16 accumulator stays within a normalised-error threshold
+    against PyTorch's own fp16 result; checked elementwise against float64, it
+    does not. fp16-accumulate MMA is also the faster path on GeForce tensor
+    cores, so a gate that let it through would rank it first."""
+    problem = Problem.create("cpu_gemm", "fp16", M=256, N=256, K=1024)
+    tuner = Tuner(warmup=1, iterations=2, flush_l2=False, measure_baselines=False)
+    result = tuner.tune(_GemmOperator(), problem, device="cpu")
+    by_mode = {o.config["MODE"]: o for o in result.outcomes}
+    assert by_mode[MODE_FP32_ACCUMULATE].status == STATUS_OK
+    assert by_mode[MODE_FP16_ACCUMULATE].status == STATUS_INCORRECT
+    assert [o.config["MODE"] for o in result.ranked()] == [MODE_FP32_ACCUMULATE]
+
+
 def test_best_is_the_fastest_correct_candidate(tuned):
     assert tuned.best is not None
     assert tuned.best.config["MODE"] == MODE_CORRECT_FAST

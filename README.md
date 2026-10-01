@@ -37,7 +37,7 @@ still gets through.)
 | | |
 | --- | --- |
 | **Hardware-derived search space** | A 432-point GEMM grid reduces to 180 feasible and 48 measured candidates. Filters come from device limits — shared memory, registers per thread, 128-byte transactions, pipeline depth, parallelism — so they transfer across GPUs, and every rejection is attributed to a named rule. |
-| **Correctness gate before ranking** | Scale-invariant error metric (`max\|out−ref\| / max\|ref\|`) with per-dtype thresholds. An incorrect configuration is recorded with its error and dropped, never timed. |
+| **Correctness gate before ranking** | Every output element is checked against a float64 reference, within about an ulp of the output format plus a floor scaled by the reference's RMS. An incorrect configuration is recorded with its error and dropped, never timed. |
 | **Kernels verified with no GPU** | 5 Triton kernels and 1 handwritten CUDA kernel are lowered to PTX/cubin for `sm80` and `sm90` in ordinary CPU CI. Tests assert tensor-core MMA selection and per-element instruction counts **from the generated PTX**. |
 | **482 tests** | 410 run without a GPU: the 189 of the CPU suite (188 pass, 1 skips for a device), and 221 kernel tests that execute the Triton kernels on CPU through Triton's interpreter (209 pass, 12 random bf16 draws skip). 72 are GPU-gated and skip with a stated reason. Correctness covers primes, one-off-a-tile sizes and degenerate single rows across 3 dtypes and 5 tile shapes. |
 | **Operator fusion, quantified** | Bias + GELU folded into the GEMM epilogue. Total DRAM traffic at 4096×11008×4096 fp16 falls from 548 MiB to 204 MiB — exact arithmetic, hardware-independent. The launch-count collapse to one is asserted by a GPU-gated test. |
@@ -135,7 +135,7 @@ flowchart TB
 
     subgraph Pipeline["Tuning pipeline (generic over Operator)"]
         CO["Triton JIT compile"]
-        VG{"Correctness gate<br/>scale-invariant error"}
+        VG{"Correctness gate<br/>elementwise vs float64"}
         BM["Benchmark<br/>CUDA events · L2 flush · 200 iters"]
         RK["Rank on median"]
     end
@@ -281,26 +281,32 @@ candidates, under-estimating admits configurations the device cannot run — and
 separately that at least one multi-stage configuration allocates past a single
 operand buffer, so the `num_stages` factor is confirmed rather than assumed.
 
-### Why the correctness metric is scale-invariant
+### Why the correctness bound is elementwise, against float64
 
-`torch.allclose` needs an absolute tolerance that depends on the magnitude of
-the data. A GEMM's output grows like `√K`, so a tolerance tuned at `K=512`
-either rejects correct kernels at `K=8192` or waves through broken ones at
-`K=128`. The gate is
+The reference is computed in float64 from the same low-precision inputs the
+kernel received. Upcasting is lossless and float64's own rounding is
+negligible, so the whole difference belongs to the kernel, and every element is
+held to
 
 ```
-err = max|out − ref| / max|ref|
+|out − ref| ≤ rtol·|ref| + 2⁻¹²·rms(ref) + subnormal spacing
 ```
 
-against one threshold per dtype (fp32 `1e-5`, fp16 `5e-3`, bf16 `2e-2`), derived
-from each format's output rounding with headroom for a differing summation
-order. Elementwise mismatch counts are still reported — "0.4% of elements
-differ" and "every element differs slightly" are different bugs — but they are
-diagnostics, not the verdict.
+with `rtol` one ulp of the output format for fp16 and bf16 (twice the rounding
+of a correct result) and `2⁻¹⁶` for fp32. The floor scaled by `rms(ref)` covers
+outputs near zero from cancellation, whose error comes from the fp32
+accumulator, and keeps the bound scale invariant: a GEMM's output grows like
+`√K`, so a fixed absolute tolerance would be wrong at some `K`. A normalised
+maximum, `max|out − ref| / max|ref|`, is scale invariant too but lets an error
+hide wherever the reference is small: it passed a GEMM accumulating in fp16 at
+`K ≤ 2048`, which is also the faster tensor-core path on GeForce cards, so it
+would have been ranked. The PyTorch and Triton baselines are other
+implementations rather than candidates; they are compared with PyTorch eager by
+that normalised error.
 
 One precision trap is handled explicitly. On Ampere and later, PyTorch may run
 an fp32 matmul through TF32 tensor cores, whose 10-bit mantissa carries ~1e-3
-relative error — a hundred times the fp32 threshold. `tl.dot` would do the same.
+relative error, well outside the fp32 bound. `tl.dot` would do the same.
 So the kernels pin `input_precision="ieee"` and the tuner disables TF32 for the
 whole session, making every fp32 comparison IEEE-to-IEEE. The consequence is
 stated plainly rather than hidden: **the fp32 PyTorch baselines here are slower
