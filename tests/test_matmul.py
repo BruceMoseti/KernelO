@@ -175,6 +175,54 @@ def test_non_contiguous_operands(device):
     assert_verified(reference(a, b), matmul(a, b, config=DEFAULT_CONFIG), dtype=torch.float16)
 
 
+#: Cells of padding on every side of a guarded tensor: at least the largest
+#: block size, so a whole-tile overrun lands in the padding rather than past it.
+GUARD = 128
+#: Exactly representable in every dtype, and not a value a stray store could
+#: write: anything computed from a NaN-padded operand is NaN.
+OUT_SENTINEL = -1024.0
+
+
+def guarded(rows, cols, dtype, device, fill):
+    """A ``rows x cols`` view into a buffer padded with ``GUARD`` cells of ``fill``."""
+    buffer = torch.full((rows + 2 * GUARD, cols + 2 * GUARD), fill, device=device, dtype=dtype)
+    return buffer, buffer[GUARD : GUARD + rows, GUARD : GUARD + cols]
+
+
+@pytest.mark.parametrize("tile", TILE_CONFIGS)
+@pytest.mark.parametrize("b_layout", ["row-major", "column-major"])
+@pytest.mark.parametrize("shape", [(1, 1, 1), (33, 47, 61), (70, 17, 129)])
+def test_no_access_outside_the_operands(shape, b_layout, tile, device):
+    """Operands sit inside NaN and the output inside a sentinel value.
+
+    A load past an operand's edge pulls NaN into the result, and a store past
+    the output's edge overwrites the sentinel. Without the padding, a stray
+    store lands outside the allocation, where no comparison can see it.
+    """
+    from kernelforge.kernels.matmul import matmul
+
+    m, n, k = shape
+    a_values, b_values = operands(m, k, n, torch.float16, device)
+    _, a = guarded(m, k, torch.float16, device, float("nan"))
+    if b_layout == "row-major":
+        _, b = guarded(k, n, torch.float16, device, float("nan"))
+    else:
+        b = guarded(n, k, torch.float16, device, float("nan"))[1].t()
+    a.copy_(a_values)
+    b.copy_(b_values)
+    out_buffer, out = guarded(m, n, torch.float16, device, OUT_SENTINEL)
+
+    matmul(a, b, config=config(*tile), out=out)
+    assert_verified(
+        reference(a_values, b_values),
+        out,
+        dtype=torch.float16,
+        context=f"matmul {m}x{n}x{k} tile={tile} {b_layout} B",
+    )
+    out.fill_(OUT_SENTINEL)
+    assert (out_buffer == OUT_SENTINEL).all(), "matmul wrote outside its output"
+
+
 def test_fp32_is_not_silently_computed_in_tf32(device):
     """The fp32 path must hold to the fp32 tolerance.
 
