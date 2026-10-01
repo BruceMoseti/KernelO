@@ -11,7 +11,7 @@ throughput formulas in `kernelforge/benchmark/metrics.py`.
 | Category  | Fields                                                                                   |
 |-----------|------------------------------------------------------------------------------------------|
 | Hardware  | GPU model, compute capability, SM count, GPU memory, L2 size, NVIDIA driver version      |
-| Software  | CUDA version PyTorch was built with, PyTorch, Triton, Python, OS, CPU model               |
+| Software  | CUDA version PyTorch was built with, PyTorch, Triton, Python, OS, CPU model, PyTorch matmul precision settings |
 | Harness   | warmup iterations, timed iterations, L2 flush buffer size, every raw sample               |
 
 `benchmark()` returns these with the latency statistics. The caller records what the harness
@@ -98,6 +98,29 @@ bandwidth, harness settings, and every metadata field above.
 - `torch.compile` runs in its default mode with `dynamic=False`, and its caches are reset for
   each shape. Without the reset, Dynamo's recompile limit would silently fall back to eager
   after a few shapes.
+
+## Tuning and comparisons
+
+`kernelforge tune matmul` measures in two stages.
+
+**Tuning.** The tuner first verifies every candidate. Only then does it benchmark the correct
+ones. This keeps compilation out of the benchmarking stage, and the GPU stays busy from one
+timed candidate to the next. The verified candidates are benchmarked in a fixed shuffled order,
+so slow thermal drift over a long session becomes noise instead of a bias against whichever
+configurations come last in grid order. Candidates are ranked by median latency.
+
+**Comparison.** After tuning, or on a cache hit, the command verifies and then times four
+implementations back to back, on the same inputs and with the same harness:
+
+- PyTorch eager (`torch.matmul`)
+- `torch.compile` in its default mode
+- the fixed-config Triton baseline (32/32/32, 4 warps, 3 stages)
+- the tuned configuration
+
+**PyTorch settings.** PyTorch's matmul settings change what cuBLAS computes: TF32 for fp32 inputs,
+and reduced-precision reductions for fp16 and bf16. KernelForge leaves them at PyTorch's
+defaults and records them in every run's metadata (the `torch_matmul_*` fields), so it is
+visible what the baselines computed. KernelForge's own fp32 MatMul uses IEEE fp32, not TF32.
 
 ## Correctness
 

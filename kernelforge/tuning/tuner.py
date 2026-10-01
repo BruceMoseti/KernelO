@@ -170,6 +170,12 @@ def tune(
         return TuneResult(problem, entry.config, entry.median_us, entry.run_id, from_cache=True)
 
     candidates = tunable.search_space.candidates(problem, limits)
+    logger.info(
+        "Search space: %d configurations, %d pruned (%s)",
+        candidates.grid_size,
+        candidates.grid_size - len(candidates.configs),
+        ", ".join(f"{rule} {count}" for rule, count in candidates.pruned.items()) or "none",
+    )
     inputs = tunable.make_inputs(problem, device)
     reference = tunable.reference(inputs)
     flops, num_bytes = tunable.flops(problem), tunable.bytes_moved(problem)

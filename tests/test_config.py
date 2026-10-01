@@ -11,7 +11,11 @@ def test_config_params_are_read_only_and_order_independent() -> None:
         config.params["BLOCK_M"] = 16  # type: ignore[index]
     assert config == reordered
     assert config.params_json() == reordered.params_json()
-    assert str(config) == "BLOCK_M=64 BLOCK_N=128 BLOCK_K=32 num_warps=8 num_stages=4"
+    assert (
+        str(config)
+        == str(reordered)
+        == "BLOCK_K=32 BLOCK_M=64 BLOCK_N=128 num_warps=8 num_stages=4"
+    )
 
 
 def test_equal_configs_hash_equal() -> None:

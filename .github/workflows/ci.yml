@@ -1,8 +1,8 @@
 name: CI
 
 # CPU-only checks. Triton kernels are exercised through Triton's CPU interpreter; tests that need
-# a GPU (timing, tensor cores, large shapes, torch.compile on CUDA) are skipped here and must run
-# on GPU hardware. No performance numbers are produced in CI.
+# a GPU (timing, tensor cores, large shapes, torch.compile on CUDA) are skipped here and run with
+# scripts/gpu_validate.sh on GPU hardware. No performance numbers are produced in CI.
 
 on:
   push:

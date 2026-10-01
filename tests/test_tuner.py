@@ -37,6 +37,9 @@ SYNTHETIC_GPU = Environment(
     python="test",
     platform="test",
     cpu="test",
+    torch_matmul_allow_tf32=False,
+    torch_matmul_fp16_reduced_precision=True,
+    torch_matmul_bf16_reduced_precision=True,
 )
 LIMITS = DeviceLimits(sm_count=4, max_shared_memory_bytes=1 << 20)
 PROBLEM = matmul_problem(48, 40, 80, torch.float32)

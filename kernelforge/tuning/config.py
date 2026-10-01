@@ -31,7 +31,7 @@ class KernelConfig:
     num_stages: int
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "params", MappingProxyType(dict(self.params)))
+        object.__setattr__(self, "params", MappingProxyType(dict(sorted(self.params.items()))))
 
     def params_json(self) -> str:
         """Canonical JSON of `params`, used as the identity of a config in the database."""

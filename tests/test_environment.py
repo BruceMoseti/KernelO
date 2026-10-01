@@ -34,6 +34,14 @@ def test_gpu_fields_are_populated() -> None:
     assert env.driver, "nvidia-smi should report the driver version on a GPU machine"
 
 
+def test_pytorch_matmul_precision_settings_are_recorded() -> None:
+    env = collect_environment()
+    matmul = torch.backends.cuda.matmul
+    assert env.torch_matmul_allow_tf32 == matmul.allow_tf32
+    assert env.torch_matmul_fp16_reduced_precision == matmul.allow_fp16_reduced_precision_reduction
+    assert env.torch_matmul_bf16_reduced_precision == matmul.allow_bf16_reduced_precision_reduction
+
+
 def test_environment_is_serializable() -> None:
     record = dataclasses.asdict(collect_environment())
     assert set(record) >= {"gpu", "compute_capability", "driver", "cuda", "torch", "triton"}

@@ -32,6 +32,10 @@ class Environment:
     python: str
     platform: str
     cpu: str
+    # PyTorch settings that change what cuBLAS computes for the PyTorch baselines.
+    torch_matmul_allow_tf32: bool
+    torch_matmul_fp16_reduced_precision: bool
+    torch_matmul_bf16_reduced_precision: bool
 
 
 def collect_environment() -> Environment:
@@ -59,6 +63,13 @@ def collect_environment() -> Environment:
         python=platform.python_version(),
         platform=platform.platform(),
         cpu=_cpu_model(),
+        torch_matmul_allow_tf32=torch.backends.cuda.matmul.allow_tf32,
+        torch_matmul_fp16_reduced_precision=(
+            torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction
+        ),
+        torch_matmul_bf16_reduced_precision=(
+            torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction
+        ),
     )
 
 
