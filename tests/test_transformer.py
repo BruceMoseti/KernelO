@@ -2,9 +2,10 @@
 
 The parity test is the important one: both backends run on one module with one
 set of weights, so a difference in output can only come from the swapped
-kernels. Config validation runs anywhere. The parity test also runs on CPU
-through Triton's interpreter (``TRITON_INTERPRET=1``), which is how CI executes
-it; tests marked ``gpu`` need a CUDA device.
+kernels. Config validation runs anywhere. The forward-pass tests also run on
+CPU through Triton's interpreter (``TRITON_INTERPRET=1``), which is how CI
+executes them; the test marked ``gpu`` times with CUDA events and needs a CUDA
+device.
 """
 
 from __future__ import annotations
@@ -71,7 +72,6 @@ def test_backends_agree_on_one_set_of_weights(device):
     assert_verified(expected_mlp, actual_mlp, dtype=torch.float16, context="fused MLP parity")
 
 
-@pytest.mark.gpu
 @pytest.mark.parametrize("seq", [1, 7, 128])
 def test_parity_holds_for_awkward_sequence_lengths(seq, device):
     """Decode (seq=1) and ragged prefill reach different kernel code paths."""
@@ -88,7 +88,6 @@ def test_parity_holds_for_awkward_sequence_lengths(seq, device):
     assert_verified(expected, actual, dtype=torch.float16, context=f"seq={seq}")
 
 
-@pytest.mark.gpu
 def test_input_shape_is_validated(device):
     block = TransformerBlock(SMALL, device=device, dtype=torch.float16)
     with pytest.raises(ValueError, match=r"\(batch, seq, hidden\)"):
@@ -97,7 +96,6 @@ def test_input_shape_is_validated(device):
         block(torch.zeros(1, 4, SMALL.hidden * 2, device=device, dtype=torch.float16))
 
 
-@pytest.mark.gpu
 def test_configurations_are_resolved_once_per_shape(device):
     """Config lookup touches the filesystem, so it must not run per forward."""
     block = TransformerBlock(SMALL, device=device, dtype=torch.float16, backend=BACKEND_KERNELFORGE)

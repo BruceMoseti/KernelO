@@ -111,7 +111,7 @@ jobs:
           pip install pytest-xdist
 
       # Triton's interpreter executes the kernels on CPU tensors, so their
-      # correctness suites and the transformer-block parity test run here.
+      # correctness suites and the transformer-block tests run here.
       # bf16 GEMMs, the largest shapes and anything that needs CUDA itself are
       # marked gpu and skip. A run in which the interpreter was not active would
       # skip every kernel test for want of a device and still be green, so at
