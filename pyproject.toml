@@ -48,3 +48,8 @@ warn_unused_ignores = true
 [[tool.mypy.overrides]]
 module = ["triton", "triton.*"]
 ignore_missing_imports = true
+
+# @triton.jit kernel parameters are typed by Triton at launch, not by annotations.
+[[tool.mypy.overrides]]
+module = ["kernelforge.kernels.*"]
+disallow_untyped_defs = false

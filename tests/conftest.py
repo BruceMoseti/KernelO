@@ -10,10 +10,13 @@ import os
 
 import pytest
 import torch
-import triton
 
 if not torch.cuda.is_available():
     os.environ.setdefault("TRITON_INTERPRET", "1")
+
+# Triton reads TRITON_INTERPRET when it decorates its own @jit standard-library functions at
+# import time, so it must be imported only after the variable is set.
+import triton  # noqa: E402
 
 GPU_AVAILABLE = torch.cuda.is_available() and not triton.knobs.runtime.interpret
 
