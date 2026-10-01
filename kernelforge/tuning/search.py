@@ -116,12 +116,24 @@ def _accumulators_per_thread(config: KernelConfig) -> float:
     return config.params["BLOCK_M"] * config.params["BLOCK_N"] / (32 * config.num_warps)
 
 
-def _exceeds_shared_memory(config: KernelConfig, problem: Problem, device: DeviceLimits) -> bool:
-    # Triton's software pipeline keeps num_stages copies of an A tile and a B tile in shared memory.
+def matmul_shared_memory_bound(config: KernelConfig, dtype: torch.dtype) -> int:
+    """Upper bound on the shared memory Triton allocates for a MatMul config.
+
+    The software pipeline holds at most num_stages copies of an A tile and a B tile. Hopper's
+    wgmma path holds num_stages; the cp.async path holds num_stages - 1. Converting the
+    accumulator's layout for the store can need up to one fp32 BLOCK_M x BLOCK_N tile, and the
+    compiler reuses the pipeline buffers for it. tests/test_compile.py checks the bound against
+    the compiler's allocation for sm_80 and sm_90.
+    """
     p = config.params
-    itemsize = torch.finfo(problem.dtype).bits // 8
-    needed = (p["BLOCK_M"] + p["BLOCK_N"]) * p["BLOCK_K"] * itemsize * config.num_stages
-    return needed > device.max_shared_memory_bytes
+    itemsize = torch.finfo(dtype).bits // 8
+    pipeline = config.num_stages * (p["BLOCK_M"] + p["BLOCK_N"]) * p["BLOCK_K"] * itemsize
+    epilogue = p["BLOCK_M"] * p["BLOCK_N"] * 4
+    return max(pipeline, epilogue)
+
+
+def _exceeds_shared_memory(config: KernelConfig, problem: Problem, device: DeviceLimits) -> bool:
+    return matmul_shared_memory_bound(config, problem.dtype) > device.max_shared_memory_bytes
 
 
 def _exceeds_register_budget(config: KernelConfig, problem: Problem, device: DeviceLimits) -> bool:
@@ -161,7 +173,7 @@ def _low_reuse(config: KernelConfig, problem: Problem, device: DeviceLimits) -> 
 MATMUL_RULES = (
     Rule(
         "shared_memory",
-        "num_stages x (A tile + B tile) exceeds the per-block shared memory limit",
+        "the shared-memory upper bound (pipeline buffers or epilogue tile) exceeds the limit",
         _exceeds_shared_memory,
     ),
     Rule(
