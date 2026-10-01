@@ -265,6 +265,73 @@ def test_best_config_is_written_to_the_cache(tmp_path):
     assert entry.median_us > 0
 
 
+def _tune_with_cache(operator, cache, *, retune=False):
+    tuner = Tuner(
+        warmup=1,
+        iterations=2,
+        measure_baselines=False,
+        cache=cache,
+        retune=retune,
+        timer=operator.synthetic_timer,
+    )
+    return tuner.tune(operator, PROBLEM, device="cpu")
+
+
+def test_second_tune_is_a_cache_hit(tmp_path, operator):
+    """An identical problem on the same device and compiler is not searched again."""
+    cache = ConfigCache(tmp_path / "configs.json")
+    first = _tune_with_cache(operator, cache)
+    operator.timed.clear()
+
+    second = _tune_with_cache(operator, cache)
+    # Only the cached configuration is verified and timed, for the report.
+    assert [config["MODE"] for config in operator.timed] == [MODE_CORRECT_FAST]
+    assert second.from_cache
+    assert second.best_config == first.best_config
+    # The entry still describes the search that produced it.
+    assert cache.entries()[0].candidates_tested == first.tested
+
+
+def test_retune_measures_again_and_replaces_the_cache_entry(tmp_path, operator, monkeypatch):
+    cache = ConfigCache(tmp_path / "configs.json")
+    _tune_with_cache(operator, cache)
+    monkeypatch.setitem(LATENCY_MS, MODE_CORRECT_SLOW, 0.1)  # now the faster of the two
+    operator.timed.clear()
+
+    result = _tune_with_cache(operator, cache, retune=True)
+    assert not result.from_cache
+    assert sorted(c["MODE"] for c in operator.timed) == [MODE_CORRECT_FAST, MODE_CORRECT_SLOW]
+    env = result.environment
+    assert cache.get(PROBLEM, env.device_key, env.triton_version)["MODE"] == MODE_CORRECT_SLOW
+    assert len(cache) == 1
+
+
+def test_a_new_triton_version_is_tuned_again(tmp_path, operator, monkeypatch):
+    cache = ConfigCache(tmp_path / "configs.json")
+    first = _tune_with_cache(operator, cache)
+    monkeypatch.setattr("kernelforge.runtime.env._triton_version", lambda: "0.0.0")
+
+    result = _tune_with_cache(operator, cache)
+    assert not result.from_cache
+    assert result.environment.triton_version == "0.0.0"
+    versions = {entry.triton_version for entry in cache.entries()}
+    assert versions == {str(first.environment.triton_version), "0.0.0"}
+
+
+def test_dispatch_serves_a_configuration_only_under_the_triton_version_that_tuned_it(
+    tmp_path, operator, monkeypatch
+):
+    """The transformer block selects through dispatch, so a stale entry must miss there too."""
+    from kernelforge.runtime.dispatch import SOURCE_DEFAULT, select_config
+
+    cache = ConfigCache(tmp_path / "configs.json")
+    result = _tune_with_cache(operator, cache)
+    assert select_config(operator, PROBLEM, cache=cache, device="cpu").config == result.best_config
+
+    monkeypatch.setattr("kernelforge.runtime.dispatch._triton_version", lambda: "0.0.0")
+    assert select_config(operator, PROBLEM, cache=cache, device="cpu").source == SOURCE_DEFAULT
+
+
 def test_log_callback_reports_the_phases():
     lines = []
     Tuner(warmup=1, iterations=2, measure_baselines=False, log=lines.append).tune(

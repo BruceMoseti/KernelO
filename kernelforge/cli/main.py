@@ -187,6 +187,7 @@ def command_tune(args: argparse.Namespace) -> int:
             flush_l2=not args.no_flush_l2,
             db=db,
             cache=cache,
+            retune=args.retune,
             log=print,
         ).tune(operator, problem)
     finally:
@@ -556,6 +557,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_storage_arguments(tune)
     tune.add_argument("--max-candidates", type=int, help="override the candidate budget")
     tune.add_argument("--no-baselines", action="store_true", help="skip comparison baselines")
+    tune.add_argument(
+        "--retune",
+        action="store_true",
+        help="search again even if the cache holds a configuration, and replace it",
+    )
     tune.add_argument(
         "--explain",
         action="store_true",
