@@ -75,14 +75,18 @@ invariant structural rather than a matter of care: ranking only ever sees
 verified candidates. A tuner that ranks on latency alone prefers kernels that
 skip work, and a broken boundary mask is exactly a kernel that skips work.
 
-### Why a scale-invariant error metric
+### Why an elementwise bound against float64
 
-The gate is `max|out - ref| / max|ref|` against a per-dtype threshold, not
-`torch.allclose`. A GEMM's output magnitude grows like `sqrt(K)`, so an
-absolute tolerance tuned at one `K` is wrong at another: too strict at
-`K=8192`, too loose at `K=128`. Elementwise mismatch counts are still computed
-and reported, because "0.4% of elements differ" and "every element differs
-slightly" are different bugs, but they are diagnostics rather than the gate.
+Candidates are checked against the operator's reference computed in float64
+from the same inputs, which is exact for this purpose, and every element must
+satisfy `|out - ref| <= rtol*|ref| + 2**-12*rms(ref) + subnormal spacing`
+(`kernelforge/testing.py` has the derivation). Not `torch.allclose`: a GEMM's
+output magnitude grows like `sqrt(K)`, so an absolute tolerance tuned at one
+`K` is wrong at another, while the `rms(ref)` floor scales with the data. Not
+the normalised maximum `max|out - ref| / max|ref|` either, which was the gate
+until it was shown to pass a GEMM accumulating in fp16 for `K <= 2048`: an error
+can hide wherever the reference is small. The baselines, which are compared
+rather than ranked, are still checked against PyTorch eager by normalised error.
 
 ### Why fp32 means IEEE on both sides
 

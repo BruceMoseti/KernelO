@@ -134,28 +134,34 @@ does not arise.
 
 ## Correctness tolerances
 
-The gate is a scale-invariant error:
+Every candidate is checked against the operator's reference computed in
+float64 from the same inputs. Upcasting is lossless and float64's own rounding
+is negligible, so the whole difference belongs to the kernel, and each element
+must satisfy
 
 ```
-err = max|out - ref| / max|ref|
+|out - ref| <= rtol * |ref| + atol * rms(ref) + spacing
 ```
 
-against a per-dtype threshold:
+| dtype | rtol | atol | Reasoning |
+| --- | --- | --- | --- |
+| fp32 | 2⁻¹⁶ | 2⁻¹² | no final rounding absorbs the kernel's own fp32 arithmetic, so 128 ulps cover approximate exp and division and summation order |
+| fp16 | 2⁻¹⁰ | 2⁻¹² | one ulp: output rounding is at most half of it |
+| bf16 | 2⁻⁷ | 2⁻¹² | one ulp, as for fp16 |
 
-| dtype | Threshold | Reasoning |
-| --- | --- | --- |
-| fp32 | 1e-5 | with TF32 disabled, a correct kernel differs only by summation order |
-| fp16 | 5e-3 | output rounding is 2⁻¹¹ ≈ 4.9e-4; the margin covers a differing accumulation order |
-| bf16 | 2e-2 | output rounding is 2⁻⁸ ≈ 3.9e-3 |
+`atol` is relative to `rms(ref)`: it covers outputs near zero from cancellation
+in a reduction, whose error is set by the fp32 accumulator, and it keeps the
+bound scale invariant, which an absolute tolerance would not be since a GEMM's
+output magnitude grows like `sqrt(K)`. `spacing` is the format's subnormal
+spacing. A normalised maximum, `max|out - ref| / max|ref|`, is also scale
+invariant, but it passed a GEMM accumulating in fp16 at `K <= 2048`, RMSNorm
+averaging over the padded block, and softmax padded with 0 instead of -inf.
 
-A single threshold per dtype holds across every shape because the metric is
-scale invariant; an absolute tolerance would not, since a GEMM's output
-magnitude grows like `sqrt(K)`.
-
-Non-finite output fails before any arithmetic. Shape mismatch fails
-immediately. An all-zero reference falls back to absolute error so the division
-stays meaningful. Elementwise mismatch counts are reported as diagnostics but
-are not the gate.
+Non-finite output fails before any arithmetic, and so does a non-finite
+reference. Shape mismatch fails immediately. The PyTorch and Triton baselines
+are compared with PyTorch eager by that normalised error, against 1e-5 (fp32),
+5e-3 (fp16) and 2e-2 (bf16): they are other implementations, measured rather
+than ranked.
 
 ## Derived metrics
 
