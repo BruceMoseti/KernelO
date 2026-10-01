@@ -83,6 +83,49 @@ hardware:
 - `torch.utils.benchmark.Timer` uses host timing with a warm L2. On a compute-bound,
   multi-millisecond MatMul, GPU execution dominates both, so medians must agree within 15%.
 
+## Correctness
+
+A kernel output is only timed or ranked after `kernelforge.testing.verify` accepts it. The
+reference is computed in **float64 from the same low-precision inputs** the kernel received.
+Upcasting is exact, and float64's own error is negligible, so the measured error belongs to the
+kernel. Each element must satisfy
+
+```
+|actual − reference| ≤ rtol(dtype) · |reference| + atol · rms(reference) + spacing(dtype)
+```
+
+| dtype | rtol            | atol (× rms of reference) |
+|-------|-----------------|---------------------------|
+| fp32  | 2⁻¹⁶ (128 ulps) | 2⁻¹²                      |
+| fp16  | 2⁻¹⁰ (1 ulp)    | 2⁻¹²                      |
+| bf16  | 2⁻⁷ (1 ulp)     | 2⁻¹²                      |
+
+- **rtol** covers rounding to the output dtype, which is at most half an ulp, plus fp32
+  arithmetic inside the kernel. For fp32 outputs there is no rounding step, so the budget covers
+  approximate `exp` and division, softmax argument reduction, and reduction-order error.
+- **atol × rms(reference)** covers outputs that are close to zero because of cancellation in a
+  reduction. Their absolute error comes from the fp32 accumulator and scales with the typical
+  output size, not with the element itself. Scaling by rms makes the check scale-invariant.
+- **spacing** is the subnormal spacing of the output dtype: the smallest normal number times
+  eps. fp16 cannot represent values below its smallest normal number more finely than this.
+  Long fp16 softmax rows hit this, and the 32768-column test fails without it.
+
+`tests/test_testing.py` checks both directions on CPU:
+
+- Correct results, accumulated in fp32 and rounded to the output dtype, pass for reduction
+  lengths up to 4096. They use less than 0.6 of the budget; rounding to fp16 or bf16 alone uses
+  about half.
+- These injected bugs fail: a dropped K term, fp16 or bf16 accumulation, TF32-rounded inputs
+  checked as IEEE fp32, a single zeroed element, a NaN, softmax padding loaded as 0 instead of
+  −∞, and an unwritten tail element.
+
+Some bugs cannot be detected from a low-precision output at all. For example, an error smaller
+than fp16 resolution in a long softmax row looks identical to a correct result.
+
+Tensor cores truncate inside each MMA instead of rounding, so GPU accumulation error can exceed
+the CPU-simulated error used in these tests. The GPU kernel tests use the same tolerances and
+will show whether the headroom holds. They have not been run yet.
+
 ## Metrics
 
 | Kernel class                          | Reported                                                     |
