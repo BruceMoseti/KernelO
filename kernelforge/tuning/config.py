@@ -37,6 +37,9 @@ class KernelConfig:
         """Canonical JSON of `params`, used as the identity of a config in the database."""
         return json.dumps(dict(self.params), sort_keys=True)
 
+    def __hash__(self) -> int:
+        return hash((self.kernel, self.params_json(), self.num_warps, self.num_stages))
+
     def __str__(self) -> str:
         params = " ".join(f"{name}={value}" for name, value in self.params.items())
         return f"{params} num_warps={self.num_warps} num_stages={self.num_stages}"
