@@ -7,6 +7,8 @@ to exercise the code paths; nothing in this file is a measurement.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from kernelforge.benchmark import report
@@ -220,6 +222,64 @@ def test_mixing_flushed_and_unflushed_timings_is_reported(tmp_path):
         artifacts = report.generate(db, tmp_path / "reports")
     assert any("unflushed" in note for note in artifacts.notes)
     assert "Warning" in artifacts.summary.read_text()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("gpu_name", "NVIDIA H100 80GB HBM3"),
+        ("torch_version", "2.99.0"),
+        ("triton_version", "9.9.0"),
+    ],
+)
+def test_rows_from_different_environments_are_never_compared(field, value, tmp_path):
+    """A speedup divides two rows only if one GPU and one software stack produced both.
+
+    An H100 KernelForge row over an A100 eager row used to print "2.00x" under
+    an environment table that named only the A100.
+    """
+    a100 = dataclasses.replace(
+        capture_environment(),
+        gpu_name="NVIDIA A100-SXM4-80GB",
+        gpu_arch="8.0",
+        device_key="NVIDIA_A100_SXM4_80GB_sm80",
+    )
+    problem = Problem.create("matmul", "fp16", M=2048, N=4096, K=4096)
+    with ResultsDB(tmp_path / "results.db") as db:
+        run_id = db.start_run(dataclasses.replace(a100, **{field: value}))
+        db.record(
+            run_id,
+            problem,
+            Measurement(label="kernelforge", status="ok", verification=ok(), timing=timing(1.0)),
+        )
+        run_id = db.start_run(a100)
+        for label, ms in (("torch_eager", 2.0), ("kernelforge", 1.6)):
+            db.record(
+                run_id,
+                problem,
+                Measurement(label=label, status="ok", verification=ok(), timing=timing(ms)),
+            )
+        artifacts = report.generate(db, tmp_path / "reports")
+
+    text = artifacts.summary.read_text()
+    assert "2.00x" not in text
+    assert "1.25x" in text
+    assert "NVIDIA A100-SXM4-80GB" in text and value in text
+
+
+def test_runs_in_one_environment_are_compared(tmp_path):
+    """``tune`` and ``benchmark`` record separate runs of one environment."""
+    environment = capture_environment()
+    problem = Problem.create("matmul", "fp16", M=512, N=512, K=512)
+    with ResultsDB(tmp_path / "results.db") as db:
+        for label, ms in (("kernelforge", 1.0), ("torch_eager", 2.0)):
+            db.record(
+                db.start_run(environment),
+                problem,
+                Measurement(label=label, status="ok", verification=ok(), timing=timing(ms)),
+            )
+        artifacts = report.generate(db, tmp_path / "reports")
+    assert "2.00x" in artifacts.summary.read_text()
 
 
 def test_provenance_comes_from_the_latest_run_not_the_latest_result(tmp_path):

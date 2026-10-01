@@ -45,6 +45,18 @@ LABEL_TITLES = {
 
 MEMORY_BOUND_OPERATIONS = frozenset({"rmsnorm", "softmax", "vector_add"})
 
+#: What two rows must share to be compared: one GPU, and one CUDA, driver,
+#: PyTorch and Triton. Rows from different environments are reported side by
+#: side and never divided into one another.
+ENVIRONMENT_FIELDS = (
+    ("GPU", "gpu_name"),
+    ("Compute capability", "gpu_arch"),
+    ("CUDA", "cuda_version"),
+    ("Driver", "driver_version"),
+    ("PyTorch", "torch_version"),
+    ("Triton", "triton_version"),
+)
+
 
 @dataclass
 class ReportArtifacts:
@@ -76,12 +88,27 @@ def _require_dependencies() -> tuple[Any, Any]:
     return pandas, plt
 
 
-def _frame(pandas: Any, db: ResultsDB) -> DataFrame:
+def _environments(db: ResultsDB) -> tuple[list[tuple], dict[int, int]]:
+    """Every distinct environment, and the number of the one each run used.
+
+    Numbered in order of first appearance, so that table rows can name the
+    environment table row they were measured in.
+    """
+    numbers: dict[tuple, int] = {}
+    of_run = {}
+    for run in db.runs():
+        key = tuple(run[field] for _, field in ENVIRONMENT_FIELDS)
+        of_run[run["run_id"]] = numbers.setdefault(key, len(numbers) + 1)
+    return list(numbers), of_run
+
+
+def _frame(pandas: Any, db: ResultsDB, environment_of_run: dict[int, int]) -> DataFrame:
     """Correct, timed rows as a DataFrame, with config parameters expanded."""
     rows = [r for r in db.rows() if r["median_us"] is not None and r["correct"] != 0]
     frame = pandas.DataFrame(rows)
     if frame.empty:
         return frame
+    frame["environment"] = frame["run_id"].map(environment_of_run)
     frame["size"] = frame["dims_json"].map(lambda s: prod(json.loads(s).values()))
     params = frame["params_json"].map(lambda s: json.loads(s) if isinstance(s, str) else {})
     for key in sorted({k for d in params for k in d}):
@@ -90,14 +117,15 @@ def _frame(pandas: Any, db: ResultsDB) -> DataFrame:
 
 
 def _best_per_label(frame: DataFrame) -> DataFrame:
-    """Fastest row for each (operation, dtype, shape, label).
+    """Fastest row for each (environment, operation, dtype, shape, label).
 
     Ordered by problem size rather than by the shape string: sorting
     ``shape_key`` lexicographically puts ``512x512x512`` after
     ``2048x4096x4096``, which reads as noise in a table.
     """
-    index = frame.groupby(["operation", "dtype", "shape_key", "label"])["median_us"].idxmin()
-    return frame.loc[index].sort_values(["operation", "dtype", "size"]).copy()
+    keys = ["environment", "operation", "dtype", "shape_key", "label"]
+    index = frame.groupby(keys)["median_us"].idxmin()
+    return frame.loc[index].sort_values(["operation", "dtype", "size", "environment"]).copy()
 
 
 def _ordered_labels(labels: Any) -> list[str]:
@@ -107,16 +135,19 @@ def _ordered_labels(labels: Any) -> list[str]:
 
 
 def _with_axis_labels(frame: DataFrame) -> DataFrame:
-    """Add the x-axis key, which has to distinguish dtypes.
+    """Add the x-axis key, which has to distinguish dtypes and environments.
 
     A shape alone is not a unique series: the same ``1024x1024x1024`` may have
-    been measured in fp16 and bf16, and indexing on the shape would both
-    collapse two bars into one label and hand matplotlib a two-element Series
-    where it expects a scalar.
+    been measured in fp16 and bf16, or on two GPUs, and indexing on the shape
+    would both collapse two bars into one label and hand matplotlib a
+    two-element Series where it expects a scalar.
     """
+    key = frame["shape_key"]
     if frame["dtype"].nunique() > 1:
-        return frame.assign(axis_key=frame["shape_key"] + " " + frame["dtype"])
-    return frame.assign(axis_key=frame["shape_key"])
+        key = key + " " + frame["dtype"]
+    if frame["environment"].nunique() > 1:
+        key = key + " env " + frame["environment"].astype(str)
+    return frame.assign(axis_key=key)
 
 
 def _axis_order(frame: DataFrame) -> list[str]:
@@ -152,12 +183,13 @@ def _grouped_bars(
 def _tuning_heatmap(plt: Any, frame: DataFrame, path: Path) -> Path | None:
     """Median latency over the BLOCK_M x BLOCK_N plane for one GEMM shape.
 
-    Uses the (shape, dtype) pair with the most measured candidates, which is
-    the one tuning explored most thoroughly, and takes the *best* latency over
-    the remaining parameters at each point -- so the picture is "what is the
-    best this tile can do", not an average over configurations that were never
-    going to win. The dtype is part of the selection because fp16 and bf16
-    tilings must not be averaged together.
+    Uses the (environment, shape, dtype) combination with the most measured
+    candidates, which is the one tuning explored most thoroughly, and takes the
+    *best* latency over the remaining parameters at each point -- so the
+    picture is "what is the best this tile can do", not an average over
+    configurations that were never going to win. The environment and dtype are
+    part of the selection because tilings measured on two GPUs, or in fp16 and
+    bf16, must not be combined.
     """
     # Databases holding only baselines, or only non-GEMM operators, have no
     # tile columns at all.
@@ -166,8 +198,13 @@ def _tuning_heatmap(plt: Any, frame: DataFrame, path: Path) -> Path | None:
     candidates = frame[(frame["label"] == "kernelforge") & frame["cfg_BLOCK_M"].notna()]
     if candidates.empty:
         return None
-    shape, dtype = candidates.groupby(["shape_key", "dtype"])["median_us"].count().idxmax()
-    subset = candidates[(candidates["shape_key"] == shape) & (candidates["dtype"] == dtype)]
+    keys = ["environment", "shape_key", "dtype"]
+    environment, shape, dtype = candidates.groupby(keys)["median_us"].count().idxmax()
+    subset = candidates[
+        (candidates["environment"] == environment)
+        & (candidates["shape_key"] == shape)
+        & (candidates["dtype"] == dtype)
+    ]
     table = subset.pivot_table(
         index="cfg_BLOCK_M", columns="cfg_BLOCK_N", values="median_us", aggfunc="min"
     )
@@ -182,7 +219,7 @@ def _tuning_heatmap(plt: Any, frame: DataFrame, path: Path) -> Path | None:
     axis.set_yticklabels([int(i) for i in table.index])
     axis.set_xlabel("BLOCK_N")
     axis.set_ylabel("BLOCK_M")
-    axis.set_title(f"Best median latency by tile ({shape} {dtype})")
+    axis.set_title(f"Best median latency by tile ({shape} {dtype}, env {environment})")
     for i in range(table.shape[0]):
         for j in range(table.shape[1]):
             value = table.values[i, j]
@@ -195,21 +232,17 @@ def _tuning_heatmap(plt: Any, frame: DataFrame, path: Path) -> Path | None:
     return path
 
 
-def _environment_section(db: ResultsDB) -> list[str]:
-    runs = db.runs()
-    if not runs:
+def _environment_section(environments: list[tuple]) -> list[str]:
+    if not environments:
         return ["No runs recorded."]
-    latest = runs[-1]
-    fields = (
-        ("GPU", "gpu_name"),
-        ("Compute capability", "gpu_arch"),
-        ("CUDA", "cuda_version"),
-        ("Driver", "driver_version"),
-        ("PyTorch", "torch_version"),
-        ("Triton", "triton_version"),
-    )
-    lines = ["| Field | Value |", "| --- | --- |"]
-    lines += [f"| {title} | {latest.get(key) or '-'} |" for title, key in fields]
+    lines = [
+        "| env | " + " | ".join(title for title, _ in ENVIRONMENT_FIELDS) + " |",
+        "| " + " | ".join(["---"] * (len(ENVIRONMENT_FIELDS) + 1)) + " |",
+    ]
+    lines += [
+        f"| {number} | " + " | ".join(str(value or "-") for value in values) + " |"
+        for number, values in enumerate(environments, start=1)
+    ]
     return lines
 
 
@@ -240,13 +273,14 @@ def _summary_table(frame: DataFrame, operation: str) -> list[str]:
     metric_title = "GB/s" if memory_bound else "TFLOP/s"
     metric_column = "gbps" if memory_bound else "tflops"
 
-    header = ["shape", "dtype", *(LABEL_TITLES.get(x, x) + " (us)" for x in labels)]
+    header = ["shape", "dtype", "env", *(LABEL_TITLES.get(x, x) + " (us)" for x in labels)]
     header += [f"KernelForge {metric_title}", "speedup vs eager"]
     lines = ["| " + " | ".join(header) + " |", "| " + " | ".join(["---"] * len(header)) + " |"]
 
-    for (shape, dtype), group in best.groupby(["shape_key", "dtype"], sort=False):
+    groups = best.groupby(["shape_key", "dtype", "environment"], sort=False)
+    for (shape, dtype, environment), group in groups:
         times = group.set_index("label")["median_us"]
-        row = [shape, dtype] + [
+        row = [shape, dtype, str(environment)] + [
             f"{times[label]:.1f}" if label in times else "-" for label in labels
         ]
         mine = group[group["label"] == "kernelforge"]
@@ -269,7 +303,8 @@ def generate(
     out.mkdir(parents=True, exist_ok=True)
     artifacts = ReportArtifacts(directory=out, summary=out / "summary.md")
 
-    frame = _frame(pandas, db)
+    environments, environment_of_run = _environments(db)
+    frame = _frame(pandas, db, environment_of_run)
     if frame.empty:
         artifacts.summary.write_text(
             "# KernelForge results\n\nNo correct, timed measurements in the database yet. "
@@ -288,7 +323,7 @@ def generate(
         "",
         "## Environment",
         "",
-        *_environment_section(db),
+        *_environment_section(environments),
         "",
     ]
 
