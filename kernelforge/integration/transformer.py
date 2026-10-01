@@ -97,6 +97,10 @@ class TransformerBlock(nn.Module):
         self.qkv_proj = nn.Linear(hidden, 3 * hidden, bias=False, **factory)
         self.out_proj = nn.Linear(hidden, hidden, bias=False, **factory)
         self.mlp_up = nn.Linear(hidden, intermediate, bias=True, **factory)
+        # Held (in, out) in memory, so that weight.t() is the contiguous (K, N)
+        # operand fused_linear is tuned on: the config cache records shapes, not
+        # strides. load_state_dict copies into this storage, so the layout stays.
+        self.mlp_up.weight = nn.Parameter(self.mlp_up.weight.detach().t().contiguous().t())
         self.mlp_down = nn.Linear(intermediate, hidden, bias=False, **factory)
 
     # --- kernel selection ----------------------------------------------
