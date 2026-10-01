@@ -313,7 +313,7 @@ identification the framework performs — which is the more useful skill anyway.
 
 `kernelforge tune` reports arithmetic intensity next to throughput, because the
 ratio of a kernel's FLOP/byte to the device's peak-FLOP/s-over-peak-GB/s ridge
-point decides whether tuning can help at all. An A100 at 312 TFLOP/s fp16 and
+point decides which roof bounds the kernel. An A100 at 312 TFLOP/s fp16 and
 2039 GB/s has a ridge point near **153 FLOP/byte**:
 
 | Workload | Arithmetic intensity | Verdict |
@@ -329,11 +329,12 @@ is bandwidth-bound by a factor of 153, and the search space reflects it —
 only 30 of 432 candidates are feasible, all at the smallest tile the grid
 offers, because there is no parallelism in M to exploit.
 
-So the honest conclusion for that shape is that **tuning is the wrong tool**.
-The levers are algorithmic: split-K to manufacture parallelism across the
+So the honest conclusion for that shape is that **tuning for reuse is the wrong
+tool**. What remains is how close the kernel gets to peak bandwidth, and the
+bigger levers are algorithmic: split-K to manufacture parallelism across the
 reduction (README future work #3), or batching more tokens to amortise the
-weight read. Being able to say "this kernel is already finished, stop tuning it"
-is a result.
+weight read. Being able to say "this kernel is bandwidth-bound, so measure it in
+GB/s against the card's peak" is a result.
 
 RMSNorm and softmax are memory-bound by construction — O(1) arithmetic per
 element — which is exactly why they are in the project next to a GEMM. They are

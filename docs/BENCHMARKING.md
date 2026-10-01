@@ -182,7 +182,9 @@ memory system.
 Arithmetic intensity is worth comparing against the GPU's ratio of peak FLOP/s
 to peak GB/s. An A100 at 312 TFLOP/s fp16 and 2039 GB/s has a ridge point near
 153 FLOP/byte: below that, no amount of kernel tuning gets past the memory
-system, and the honest conclusion is that the kernel is already done.
+system. The kernel is done only when its measured GB/s reaches the card's peak;
+being below the ridge says which roof to measure against, not that the kernel
+has reached it.
 
 ## Profiling
 
