@@ -178,10 +178,17 @@ class RMSNormOperator(Operator):
 
     def baselines(self, problem: Problem, inputs):
         x, gamma = inputs
-        return {
+        out = {
             "torch_eager": lambda: rmsnorm_reference(x, gamma),
             "torch_compile": compiled_baseline(rmsnorm_reference, inputs),
             "triton_baseline": lambda: rmsnorm(
                 x, gamma, config=default_config(problem.dims_dict["cols"])
             ),
         }
+        # The handwritten CUDA implementation joins the comparison only when a
+        # toolchain is present; everything else still runs without one.
+        from kernelforge.kernels import cuda_rmsnorm as cuda_ext
+
+        if cuda_ext.available():
+            out["cuda"] = lambda: cuda_ext.cuda_rmsnorm(x, gamma, eps=DEFAULT_EPS)
+        return out
