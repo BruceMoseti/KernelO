@@ -42,6 +42,9 @@ def test_backends_agree_on_one_set_of_weights(device):
 
     ``backend`` is an attribute of a single module, so the two forward passes
     share weights exactly and any difference is attributable to the kernels.
+    With weights this small the block's output is almost all residual stream,
+    so the swapped operators' own outputs are compared as well: a kernel that
+    returned zeros would otherwise pass.
     """
     from kernelforge.testing import assert_verified
 
@@ -50,14 +53,21 @@ def test_backends_agree_on_one_set_of_weights(device):
     for parameter in block.parameters():
         torch.nn.init.normal_(parameter, std=0.02)
     x = torch.randn(2, 128, SMALL.hidden, device=device, dtype=torch.float16)
+    flat = x.reshape(-1, SMALL.hidden)
 
     with torch.inference_mode():
         block.backend = BACKEND_TORCH
         expected = block(x)
+        expected_norm = block._norm(flat, block.attn_norm_weight)
+        expected_mlp = block._mlp_activation(flat)
         block.backend = BACKEND_KERNELFORGE
         actual = block(x)
+        actual_norm = block._norm(flat, block.attn_norm_weight)
+        actual_mlp = block._mlp_activation(flat)
 
     assert_verified(expected, actual, dtype=torch.float16, context="transformer block parity")
+    assert_verified(expected_norm, actual_norm, dtype=torch.float16, context="RMSNorm parity")
+    assert_verified(expected_mlp, actual_mlp, dtype=torch.float16, context="fused MLP parity")
 
 
 @pytest.mark.gpu
