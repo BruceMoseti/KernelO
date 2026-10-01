@@ -243,3 +243,7 @@ def test_inputs_are_validated(device):
         fused_linear_gelu(x, torch.zeros(9, 16, device=device, dtype=torch.float16), bias)
     with pytest.raises(ValueError, match="dtype mismatch"):
         fused_linear_gelu(x, w.float(), bias)
+    with pytest.raises(ValueError, match="out must be"):
+        fused_linear_gelu(x, w, bias, out=torch.empty(4, 15, device=device, dtype=torch.float16))
+    with pytest.raises(ValueError, match="out must be"):
+        fused_linear_gelu(x, w, bias, out=torch.empty(4, 16, device=device, dtype=torch.float32))

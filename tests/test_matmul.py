@@ -202,6 +202,11 @@ def test_shape_and_dtype_mismatches_are_rejected(device):
         matmul(a, torch.randn(8, 4, device=device, dtype=torch.float32))
     with pytest.raises(ValueError, match="2D"):
         matmul(a, torch.randn(8, device=device, dtype=torch.float16))
+    b = torch.randn(8, 4, device=device, dtype=torch.float16)
+    with pytest.raises(ValueError, match="out must be"):
+        matmul(a, b, out=torch.empty(4, 5, device=device, dtype=torch.float16))
+    with pytest.raises(ValueError, match="out must be"):
+        matmul(a, b, out=torch.empty(4, 4, device=device, dtype=torch.float32))
 
 
 @pytest.mark.gpu

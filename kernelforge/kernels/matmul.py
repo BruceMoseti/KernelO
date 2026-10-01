@@ -129,12 +129,24 @@ def _check_operands(a: torch.Tensor, b: torch.Tensor) -> None:
         raise ValueError(f"dtype mismatch: {a.dtype} vs {b.dtype}")
 
 
-def matmul(a: torch.Tensor, b: torch.Tensor, *, config: KernelConfig | None = None) -> torch.Tensor:
+def matmul(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    *,
+    config: KernelConfig | None = None,
+    out: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """``a @ b``, written into ``out`` when given; ``out`` may be any strided view."""
     _check_operands(a, b)
     cfg = config or DEFAULT_CONFIG
     m, k = a.shape
     _, n = b.shape
-    c = torch.empty((m, n), device=a.device, dtype=a.dtype)
+    if out is None:
+        c = torch.empty((m, n), device=a.device, dtype=a.dtype)
+    elif out.shape != (m, n) or out.dtype != a.dtype:
+        raise ValueError(f"out must be ({m}, {n}) {a.dtype}, got {tuple(out.shape)} {out.dtype}")
+    else:
+        c = out
     grid = (triton.cdiv(m, cfg["BLOCK_M"]) * triton.cdiv(n, cfg["BLOCK_N"]),)
     matmul_kernel[grid](
         a,
