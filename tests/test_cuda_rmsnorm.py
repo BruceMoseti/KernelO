@@ -25,14 +25,20 @@ ARCHITECTURES = ("sm_80", "sm_90")
 
 
 @pytest.fixture(scope="module")
-def ptx_by_arch(tmp_path_factory):
+def ptx_by_arch(tmp_path_factory, request):
     workdir = tmp_path_factory.mktemp("cuda-compile")
     toolchain = find_toolchain(workdir)
     if toolchain is None:
         pytest.skip(
-            "no CUDA device compiler available; install clang and "
+            "no working CUDA device compiler available; install clang, a "
+            "libstdc++ clang can target NVPTX with (13 or earlier), and "
             "nvidia-cuda-runtime-cu12 + nvidia-cuda-nvcc-cu12 to enable"
         )
+    # Reported because the choice is load-bearing: a newer libstdc++ breaks
+    # NVPTX device compilation, so which one was picked belongs in the log.
+    request.config.pluginmanager.get_plugin("terminalreporter").write_line(
+        f"CUDA device compiler: {toolchain.compiler} with {toolchain.stdlib_label}"
+    )
     source = workdir / "instantiate.cu"
     source.write_text(INSTANTIATION_SOURCE)
     return {
@@ -94,6 +100,25 @@ def test_device_code_is_fully_inlined(ptx_by_arch, arch):
     """
     ptx = ptx_by_arch[arch]
     assert ".func" not in ptx
+
+
+def test_toolchain_discovery_only_returns_a_working_compiler(tmp_path):
+    """A toolchain that cannot compile must be reported as absent.
+
+    Discovery used to take the newest libstdc++ on the machine and assume it
+    worked. On a runner with GCC 14 that assumption is false -- clang's CUDA
+    wrapper pulls ``<cmath>`` into the device pass, and libstdc++ 14's
+    ``<limits>`` declares ``numeric_limits<__float128>``, which NVPTX has no
+    such type for. The result was ten errors inside the kernel tests rather
+    than one honest skip.
+    """
+    toolchain = find_toolchain(tmp_path)
+    if toolchain is None:
+        pytest.skip("no CUDA device compiler on this machine")
+    source = tmp_path / "verify.cu"
+    source.write_text("__global__ void verify() {}\n")
+    # Must not raise: discovery already proved this combination compiles.
+    assert "verify" in compile_device_code(toolchain, source, tmp_path / "verify.ptx", arch="sm_80")
 
 
 def test_availability_check_does_not_attempt_a_build():

@@ -42,7 +42,7 @@ tests — and a surprising amount of that is verified without a GPU at all:
 | An incorrect configuration is never ranked | the tuner driven end to end on a CPU operator whose configs fail in each real way |
 | Search-space filters are device-specific | a tile feasible on an A100 is rejected for an RTX 4090, both without the hardware |
 
-On a CPU-only machine, `pytest -m "not gpu"` gives **187 passed, 1 skipped**.
+On a CPU-only machine, `pytest -m "not gpu"` gives **188 passed, 1 skipped**.
 A further **292** tests need a CUDA device and skip with a stated reason
 rather than failing, so the same suite runs in ordinary CI and on a GPU runner.
 

@@ -57,11 +57,18 @@ jobs:
       # Triton lowers kernels to PTX and cubin for a named target without a
       # device, and clang does the same for the handwritten CUDA kernel given
       # CUDA's headers and libdevice. Both make the kernels checkable here.
+      # clang's CUDA wrapper pulls <cmath> into the NVPTX device pass, and
+      # libstdc++ 14's <limits> declares numeric_limits<__float128>, which
+      # NVPTX cannot support. The harness probes for a usable version, but it
+      # can only find one that is installed, and the runner image ships 14.
       - name: Install CUDA headers and libdevice for the device-code checks
         run: |
           pip install nvidia-cuda-runtime-cu12 nvidia-cuda-nvcc-cu12 \
                       nvidia-cuda-cccl-cu12 nvidia-curand-cu12
-          clang++ --version || (sudo apt-get update && sudo apt-get install -y clang)
+          sudo apt-get update
+          sudo apt-get install -y clang libstdc++-13-dev
+          clang++ --version
+          ls /usr/include/c++/
 
       - name: Confirm the package imports without a GPU
         run: |
@@ -71,15 +78,21 @@ jobs:
       - name: Run the CPU-safe suite
         run: pytest -m "not gpu" -q
 
-      # The device-code checks are the point of this workflow; if the toolchain
-      # above failed to assemble they would skip silently, so their presence is
-      # asserted rather than assumed.
+      # The device-code checks are the point of this workflow. If the toolchain
+      # above failed to assemble they would skip, and a green run would mean
+      # the kernels were never compiled, so their presence is asserted.
+      #
+      # The assertion is "nothing was skipped" rather than a search for a
+      # particular reason: under `-m "not gpu"` the device-dependent tests in
+      # these two files are deselected, not skipped, so any skip at all means
+      # a toolchain went missing. Matching on the wording of a skip message
+      # would silently stop working the next time that message is reworded.
       - name: Assert the device-code checks actually ran
         run: |
           pytest tests/test_triton_compile.py tests/test_cuda_rmsnorm.py \
                  -m "not gpu" -q --no-header -rs 2>&1 | tee result.txt
-          if grep -q "no CUDA device compiler available" result.txt; then
-            echo "::error::CUDA device-code compile checks were skipped"
+          if grep -qi "skipped" result.txt; then
+            echo "::error::device-code compile checks were skipped; reasons above"
             exit 1
           fi
 

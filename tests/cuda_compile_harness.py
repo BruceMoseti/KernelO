@@ -41,6 +41,9 @@ class CudaToolchain:
     compiler: Path
     cuda_path: Path
     stdlib_includes: tuple[Path, ...]
+    #: Which libstdc++ was selected, for the test report. The choice is
+    #: load-bearing (see `_libstdcxx_candidates`) so it must not be invisible.
+    stdlib_label: str = "clang default"
 
 
 def _nvidia_root() -> Path | None:
@@ -54,20 +57,45 @@ def _nvidia_root() -> Path | None:
     return None
 
 
-def _libstdcxx_includes() -> tuple[Path, ...]:
-    """libstdc++ header directories, which clang needs told explicitly."""
+def _libstdcxx_candidates() -> list[tuple[str, tuple[Path, ...]]]:
+    """Candidate libstdc++ header sets to try, newest version first.
+
+    Clang has to be told where libstdc++ lives, and *which* version it picks
+    matters more than it looks. Clang's CUDA wrapper header includes ``<cmath>``
+    for every CUDA translation unit, so the standard library is pulled into the
+    NVPTX device compilation whether the kernel uses it or not. libstdc++ 14's
+    ``<limits>`` then declares ``numeric_limits<__float128>`` unconditionally --
+    the macro that guards it is baked into the installed headers when GCC is
+    built for x86 -- and ``__float128`` does not exist on NVPTX, so the device
+    pass fails with 18 errors before reaching any of our code.
+
+    Taking the newest version therefore cannot be right: it works on a runner
+    with GCC 13 and fails on one with GCC 14. No compiler flag avoids it
+    (``-std=`` variants, ``-nostdinc++``, ``--gcc-toolchain`` and letting clang
+    choose were all tried and all fail), so the only option is to pick a
+    version that works -- which means trying them, not assuming.
+
+    The empty set is included last: on a machine where clang's default happens
+    to be compatible, nothing needs to be passed at all.
+    """
     base = Path("/usr/include/c++")
-    if not base.is_dir():
-        return ()
-    versions = sorted((p for p in base.iterdir() if p.is_dir()), reverse=True)
-    if not versions:
-        return ()
-    version = versions[0].name
-    candidates = (
-        base / version,
-        Path("/usr/include/x86_64-linux-gnu/c++") / version,
-    )
-    return tuple(p for p in candidates if p.is_dir())
+    candidates: list[tuple[str, tuple[Path, ...]]] = []
+    if base.is_dir():
+        for version in sorted((p for p in base.iterdir() if p.is_dir()), reverse=True):
+            paths = (
+                version,
+                Path("/usr/include/x86_64-linux-gnu/c++") / version.name,
+            )
+            candidates.append((f"libstdc++-{version.name}", tuple(p for p in paths if p.is_dir())))
+    candidates.append(("clang default", ()))
+    return candidates
+
+
+#: The smallest CUDA translation unit there is. Enough to decide a toolchain:
+#: clang's CUDA wrapper drags in the standard library regardless of content, so
+#: an empty kernel fails on an incompatible libstdc++ exactly as the real one
+#: does, in a fraction of the time.
+_PROBE_SOURCE = "__global__ void kernelforge_toolchain_probe() {}\n"
 
 
 def _assemble_cuda_path(destination: Path) -> Path | None:
@@ -119,18 +147,37 @@ def _assemble_cuda_path(destination: Path) -> Path | None:
 
 
 def find_toolchain(workdir: Path) -> CudaToolchain | None:
-    """Locate a usable CUDA device compiler, or ``None`` to skip."""
+    """Locate a *working* CUDA device compiler, or ``None`` to skip.
+
+    Each candidate standard library is verified by compiling an empty kernel
+    rather than assumed to work. Returning a toolchain that cannot compile is
+    worse than returning nothing: the failure would surface as ten confusing
+    errors inside the kernel tests instead of one clear skip.
+    """
     compiler = shutil.which("clang++")
     if compiler is None:
         return None
     cuda_path = _assemble_cuda_path(workdir / "cuda-root")
     if cuda_path is None:
         return None
-    return CudaToolchain(
-        compiler=Path(compiler),
-        cuda_path=cuda_path,
-        stdlib_includes=_libstdcxx_includes(),
-    )
+
+    probe = workdir / "toolchain_probe.cu"
+    probe.write_text(_PROBE_SOURCE)
+    for index, (label, includes) in enumerate(_libstdcxx_candidates()):
+        toolchain = CudaToolchain(
+            compiler=Path(compiler),
+            cuda_path=cuda_path,
+            stdlib_includes=includes,
+            stdlib_label=label,
+        )
+        try:
+            compile_device_code(
+                toolchain, probe, workdir / f"toolchain_probe_{index}.ptx", arch="sm_80"
+            )
+        except AssertionError:
+            continue
+        return toolchain
+    return None
 
 
 def compile_device_code(toolchain: CudaToolchain, source: Path, output: Path, *, arch: str) -> str:
