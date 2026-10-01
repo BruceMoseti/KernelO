@@ -121,7 +121,7 @@ jobs:
         run: |
           set -o pipefail
           pytest tests/test_matmul.py tests/test_fused_linear.py tests/test_rmsnorm.py \
-                 tests/test_softmax_and_vector_add.py -n auto -q -rs 2>&1 | tee result.txt
+                 tests/test_softmax.py tests/test_vector_add.py -n auto -q -rs 2>&1 | tee result.txt
           if ! grep -Eq "[0-9]+ passed" result.txt; then
             echo "::error::no kernel test ran; the interpreter was not active"
             exit 1

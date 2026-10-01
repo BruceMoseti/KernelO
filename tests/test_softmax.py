@@ -1,4 +1,4 @@
-"""Softmax and vector-add correctness.
+"""Softmax correctness.
 
 Tests marked ``gpu`` need a CUDA device. The rest also run on CPU through
 Triton's interpreter (``TRITON_INTERPRET=1``), which is how CI executes them.
@@ -19,21 +19,11 @@ from kernelforge.tuning.config import KernelConfig, Problem
 
 pytest.importorskip("triton")
 
+#: Softmax converts to fp32 first and runs in every dtype on CPU.
 DTYPES = (torch.float16, torch.bfloat16, torch.float32)
-
-#: Vector add does its arithmetic in the input dtype, and Triton's interpreter
-#: does bf16 arithmetic on the raw storage bits, so bf16 needs a GPU. Softmax
-#: converts to fp32 first and runs in every dtype on CPU.
-VECTOR_ADD_DTYPES = [
-    pytest.param(dtype, marks=pytest.mark.gpu) if dtype == torch.bfloat16 else dtype
-    for dtype in DTYPES
-]
 
 CORRECTNESS_ROW_SHAPES = [
     tuple(p.dims_dict.values()) for p in workloads.problems("softmax", "correctness", "fp16")
-]
-CORRECTNESS_ELEMENT_COUNTS = [
-    p["n"] for p in workloads.problems("vector_add", "correctness", "fp16")
 ]
 
 
@@ -98,6 +88,38 @@ def test_softmax_rows_per_program(rows_per_program, device):
     )
 
 
+@pytest.mark.parametrize("seed", range(24))
+def test_softmax_randomised_shapes(seed, device):
+    """Random shapes, dtypes and configurations. Catches what a fixed list does not.
+
+    Widths are log-uniform up to the single-pass limit of 16384. A row of 16
+    columns or fewer has no candidates, since every configuration would idle
+    threads, so it runs the default configuration, as dispatch would.
+    """
+    import random
+
+    from kernelforge.kernels.softmax import default_config, softmax
+    from kernelforge.runtime.env import device_caps
+    from kernelforge.tuning.search import SoftmaxSearchSpace
+
+    # Seeded by name, so that each kernel's suite draws its own shapes.
+    rng = random.Random(f"softmax-{seed}")
+    rows, cols = rng.randint(1, 600), round(2 ** rng.uniform(0, 14))
+    dtype = rng.choice(DTYPES)
+    problem = Problem.create("softmax", dtype, rows=rows, cols=cols)
+    candidates = SoftmaxSearchSpace().candidates(problem, device_caps(device))
+    chosen = rng.choice(candidates) if candidates else default_config(cols)
+
+    gen = torch.Generator(device=device).manual_seed(seed)
+    x = torch.randn(rows, cols, device=device, dtype=dtype, generator=gen)
+    assert_verified(
+        torch.softmax(x.double(), dim=-1),
+        softmax(x, config=chosen),
+        dtype=dtype,
+        context=f"softmax {rows}x{cols} {dtype} {chosen!r}",
+    )
+
+
 def test_softmax_candidates_all_agree(device):
     from kernelforge.kernels.softmax import softmax
     from kernelforge.runtime.env import device_caps
@@ -119,44 +141,3 @@ def test_softmax_rejects_non_2d_input(device):
 
     with pytest.raises(ValueError, match="2D"):
         softmax(torch.zeros(2, 3, 4, device=device, dtype=torch.float16))
-
-
-@pytest.mark.parametrize("n", CORRECTNESS_ELEMENT_COUNTS)
-@pytest.mark.parametrize("dtype", VECTOR_ADD_DTYPES)
-def test_vector_add_across_sizes(n, dtype, device):
-    from kernelforge.kernels.vector_add import DEFAULT_CONFIG, vector_add
-
-    gen = torch.Generator(device=device).manual_seed(0)
-    a = torch.randn(n, device=device, dtype=dtype, generator=gen)
-    b = torch.randn(n, device=device, dtype=dtype, generator=gen)
-    assert_verified(
-        a.double() + b.double(),
-        vector_add(a, b, config=DEFAULT_CONFIG),
-        dtype=dtype,
-        context=f"n={n}",
-    )
-
-
-def test_vector_add_candidates_all_agree(device):
-    from kernelforge.kernels.vector_add import vector_add
-    from kernelforge.runtime.env import device_caps
-    from kernelforge.tuning.search import VectorAddSearchSpace
-
-    n = 1_000_003
-    gen = torch.Generator(device=device).manual_seed(0)
-    a = torch.randn(n, device=device, dtype=torch.float16, generator=gen)
-    b = torch.randn(n, device=device, dtype=torch.float16, generator=gen)
-    expected = a.double() + b.double()
-    problem = Problem.create("vector_add", "fp16", n=n)
-    for candidate in VectorAddSearchSpace().candidates(problem, device_caps(device)):
-        assert_verified(expected, vector_add(a, b, config=candidate), dtype=torch.float16)
-
-
-def test_vector_add_validates_inputs(device):
-    from kernelforge.kernels.vector_add import vector_add
-
-    a = torch.zeros(8, device=device, dtype=torch.float16)
-    with pytest.raises(ValueError, match="shape mismatch"):
-        vector_add(a, torch.zeros(9, device=device, dtype=torch.float16))
-    with pytest.raises(ValueError, match="dtype mismatch"):
-        vector_add(a, torch.zeros(8, device=device, dtype=torch.float32))
