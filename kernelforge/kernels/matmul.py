@@ -64,7 +64,6 @@ def matmul_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
     GROUP_M: tl.constexpr,
-    INPUT_PRECISION: tl.constexpr,
 ):
     # --- L2-aware program ordering -------------------------------------
     # Map the 1D program id onto a tile of C in GROUP_M-row groups. The last
@@ -97,7 +96,7 @@ def matmul_kernel(
         k_remaining = K - k * BLOCK_K
         a = tl.load(a_ptrs, mask=offs_k[None, :] < k_remaining, other=0.0)
         b = tl.load(b_ptrs, mask=offs_k[:, None] < k_remaining, other=0.0)
-        accumulator = tl.dot(a, b, accumulator, input_precision=INPUT_PRECISION)
+        accumulator = tl.dot(a, b, accumulator, input_precision="ieee")
         a_ptrs += BLOCK_K * stride_ak
         b_ptrs += BLOCK_K * stride_bk
 
@@ -145,7 +144,6 @@ def matmul(a: torch.Tensor, b: torch.Tensor, *, config: KernelConfig | None = No
         b.stride(1),
         c.stride(0),
         c.stride(1),
-        INPUT_PRECISION="ieee",
         **cfg.meta,
         **cfg.launch,
     )
@@ -202,7 +200,6 @@ def matmul_triton_autotune(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         b.stride(1),
         c.stride(0),
         c.stride(1),
-        INPUT_PRECISION="ieee",
     )
     return c
 

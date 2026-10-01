@@ -63,7 +63,6 @@ def fused_linear_gelu_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
     GROUP_M: tl.constexpr,
-    INPUT_PRECISION: tl.constexpr,
 ):
     pid = tl.program_id(axis=0)
     num_pid_m = tl.cdiv(M, BLOCK_M)
@@ -86,7 +85,7 @@ def fused_linear_gelu_kernel(
         k_remaining = K - k * BLOCK_K
         a = tl.load(x_ptrs, mask=offs_k[None, :] < k_remaining, other=0.0)
         b = tl.load(w_ptrs, mask=offs_k[:, None] < k_remaining, other=0.0)
-        accumulator = tl.dot(a, b, accumulator, input_precision=INPUT_PRECISION)
+        accumulator = tl.dot(a, b, accumulator, input_precision="ieee")
         x_ptrs += BLOCK_K * stride_xk
         w_ptrs += BLOCK_K * stride_wk
 
@@ -150,7 +149,6 @@ def fused_linear_gelu(
         w.stride(1),
         y.stride(0),
         y.stride(1),
-        INPUT_PRECISION="ieee",
         **cfg.meta,
         **cfg.launch,
     )

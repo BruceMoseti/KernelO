@@ -81,7 +81,6 @@ def gemm_signature(dtype: str, *, bias: bool = False) -> dict[str, str]:
         "BLOCK_N": "constexpr",
         "BLOCK_K": "constexpr",
         "GROUP_M": "constexpr",
-        "INPUT_PRECISION": "constexpr",
     }
     if bias:
         keys = list(sig)
@@ -113,7 +112,6 @@ def gemm_constexprs(config, dtype: str) -> dict[str, object]:
         "BLOCK_N": config["BLOCK_N"],
         "BLOCK_K": config["BLOCK_K"],
         "GROUP_M": config["GROUP_M"],
-        "INPUT_PRECISION": "ieee",
     }
 
 
