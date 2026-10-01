@@ -226,8 +226,10 @@ lanes cannot contaminate valid ones; and the epilogue's store mask discards
 them. Only the K axis needs a real mask, because a short final K step must
 contribute *zero* rather than wrapped data. The payoff is no M/N masking in the
 inner loop at all. I reasoned it through by hand for `M=1`, `N=1` and `K=1`,
-and the 88 GPU-gated tests in `test_matmul.py` exercise it over primes,
-one-off-a-tile sizes and degenerate rows -- though none of them has run.
+and the 88 tests in `test_matmul.py` exercise it over primes,
+one-off-a-tile sizes and degenerate rows. CI runs 56 of them on CPU through
+Triton's interpreter; the bf16 cases and the largest shapes need a GPU and have
+not run.
 
 ---
 
