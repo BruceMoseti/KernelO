@@ -3,7 +3,8 @@
 Generated, not committed.
 
 `kernelforge tune` and `kernelforge benchmark` write `kernelforge.db` here, and
-`kernelforge report` reads it to produce `reports/`. Both are gitignored.
+`kernelforge report` reads it to produce `reports/` and one CSV export per
+operator and dtype here, such as `matmul_fp16.csv`. All of them are gitignored.
 
 Measurements belong to the machine that produced them: an RTX 4090 number and
 an A100 number in the same table are not a comparison. Committing a database

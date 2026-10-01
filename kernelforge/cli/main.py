@@ -605,7 +605,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     report = subparsers.add_parser("report", help="render tables and figures from the database")
     _add_storage_arguments(report)
-    report.add_argument("--out", default="reports", help="output directory")
+    report.add_argument(
+        "--out",
+        default="reports",
+        help="directory for summary.md and the figures; CSV exports go next to --db",
+    )
 
     cache = subparsers.add_parser("cache", help="inspect or clear the tuned-config cache")
     cache.add_argument("cache_command", choices=("list", "clear"))

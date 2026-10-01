@@ -129,12 +129,32 @@ def test_report_writes_summary_tables_and_figures(seeded_db, tmp_path):
     assert artifacts.summary.exists()
     names = {p.name for p in artifacts.figures}
     assert "matmul_latency.png" in names
+    assert "matmul_speedup.png" in names
     assert "matmul_tflops.png" in names
     assert "rmsnorm_bandwidth.png" in names
     assert "tuning_heatmap.png" in names
-    assert {p.name for p in artifacts.tables} == {"matmul.csv", "rmsnorm.csv"}
+    # One CSV per operation and dtype, next to the database it was exported from.
+    assert set(artifacts.tables) == {
+        seeded_db.path.parent / "matmul_fp16.csv",
+        seeded_db.path.parent / "rmsnorm_fp16.csv",
+    }
     for path in artifacts.figures:
         assert path.stat().st_size > 1000, f"{path.name} looks empty"
+
+
+def test_fused_linear_gets_the_fusion_speedup_chart(tmp_path):
+    with ResultsDB(tmp_path / "results.db") as db:
+        run_id = db.start_run(capture_environment())
+        problem = Problem.create("fused_linear", "fp16", M=4096, N=11008, K=4096)
+        for label, ms in (("torch_eager", 3.0), ("torch_compile", 2.5), ("kernelforge", 2.0)):
+            db.record(
+                run_id,
+                problem,
+                Measurement(label=label, status="ok", verification=ok(), timing=timing(ms)),
+            )
+        artifacts = report.generate(db, tmp_path / "reports")
+    figure = next(p for p in artifacts.figures if p.name == "fusion_speedup.png")
+    assert figure.stat().st_size > 1000
 
 
 def test_summary_rows_are_ordered_by_problem_size(seeded_db, tmp_path):

@@ -113,9 +113,11 @@ the framework reports for single-token decode (1.0 FLOP/byte). See
 [§ Benchmark methodology](#benchmark-methodology).
 
 `kernelforge report` reads the SQLite database and renders `summary.md`,
-per-operator CSV exports, latency and throughput charts, a bandwidth chart for
-the memory-bound operators, and a `BLOCK_M × BLOCK_N` latency heatmap. No figure
-is ever transcribed by hand, so regenerating cannot go stale.
+latency, speedup and throughput charts by shape (the fused kernel's speedup is
+`fusion_speedup.png`), a bandwidth chart for the memory-bound operators, and a
+`BLOCK_M × BLOCK_N` latency heatmap. It exports one CSV per operator and dtype,
+such as `results/matmul_fp16.csv`, next to the database. No figure is ever
+transcribed by hand, so regenerating cannot go stale.
 
 ---
 
