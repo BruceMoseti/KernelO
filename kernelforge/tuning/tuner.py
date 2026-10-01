@@ -166,6 +166,7 @@ class Tuner:
         db: ResultsDB | None = None,
         cache: ConfigCache | None = None,
         log: Callable[[str], None] | None = None,
+        timer: Callable[..., TimingResult] = benchmark,
     ) -> None:
         self.warmup = warmup
         self.iterations = iterations
@@ -176,6 +177,8 @@ class Tuner:
         self.db = db
         self.cache = cache
         self._log = log
+        #: Called with the same arguments as :func:`benchmark`.
+        self.timer = timer
 
     def log(self, message: str) -> None:
         if self._log is not None:
@@ -270,7 +273,7 @@ class Tuner:
         if not outcome.ok:
             return outcome
         try:
-            timing = benchmark(
+            timing = self.timer(
                 lambda: operator.run(outcome.config, *inputs),
                 warmup=self.warmup,
                 iterations=self.iterations,
@@ -314,7 +317,7 @@ class Tuner:
                 if not check.passed:
                     self.log(f"  baseline {label} disagrees with the reference: {check.reason}")
                     continue
-                out[label] = benchmark(
+                out[label] = self.timer(
                     fn,
                     warmup=self.warmup,
                     iterations=self.iterations,
