@@ -208,10 +208,10 @@ def test_nsight_profiles_the_kernelforge_kernel(operation, kernel, monkeypatch):
 
     from kernelforge.profiling import nsight
 
-    triton = pytest.importorskip("triton")
+    pytest.importorskip("triton")
     # Triton names the compiled kernel after the decorated function.
     module = importlib.import_module(f"kernelforge.kernels.{operation}")
-    assert isinstance(getattr(module, kernel), triton.JITFunction)
+    assert getattr(module, kernel).fn.__name__ == kernel
 
     commands = []
 
