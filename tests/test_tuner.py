@@ -237,8 +237,17 @@ def test_log_callback_reports_the_phases():
 
 
 def test_tuner_honours_the_candidate_budget():
+    # The budget never splits a priority tier, so the configurations need distinct priorities.
+    class _RankedSpace(_FakeSpace):
+        def priority(self, config, problem, caps):
+            return (float(config["MODE"]),)
+
+    class _RankedOperator(_FakeOperator):
+        def search_space(self) -> _RankedSpace:
+            return _RankedSpace()
+
     result = Tuner(warmup=1, iterations=2, max_candidates=2, measure_baselines=False).tune(
-        _FakeOperator(), PROBLEM, device="cpu"
+        _RankedOperator(), PROBLEM, device="cpu"
     )
     assert result.tested == 2
 
