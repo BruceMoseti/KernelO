@@ -2,7 +2,9 @@
 
 The parity test is the important one: both backends run on one module with one
 set of weights, so a difference in output can only come from the swapped
-kernels. Config validation runs anywhere; the forward pass needs a GPU.
+kernels. Config validation runs anywhere. The parity test also runs on CPU
+through Triton's interpreter (``TRITON_INTERPRET=1``), which is how CI executes
+it; tests marked ``gpu`` need a CUDA device.
 """
 
 from __future__ import annotations
@@ -36,7 +38,6 @@ def test_unknown_backend_is_rejected():
         TransformerBlock(SMALL, device="cpu", dtype=torch.float32, backend="cutlass")
 
 
-@pytest.mark.gpu
 def test_backends_agree_on_one_set_of_weights(device):
     """Swapping the kernels must not change the block's output.
 

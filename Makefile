@@ -37,7 +37,8 @@ test: ## Run the CPU-safe suite (no GPU required)
 
 test-kernels: ## Run the kernel suites on CPU through Triton's interpreter (no GPU required)
 	TRITON_INTERPRET=1 $(PYTEST) tests/test_matmul.py tests/test_fused_linear.py \
-		tests/test_rmsnorm.py tests/test_softmax.py tests/test_vector_add.py -q
+		tests/test_rmsnorm.py tests/test_softmax.py tests/test_vector_add.py \
+		tests/test_transformer.py -q
 
 test-gpu: ## Run only the tests that require a CUDA device
 	$(PYTEST) -m gpu -q
