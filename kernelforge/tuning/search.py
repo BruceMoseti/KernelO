@@ -477,7 +477,10 @@ class _RowReductionSpace(SearchSpace):
             return f"row of {problem.dims_dict['cols']} exceeds the single-pass limit"
 
         per_thread = block / (config["num_warps"] * caps.warp_size)
-        if per_thread < self.MIN_ELEMS_PER_THREAD:
+        # The idle-threads rule prefers fewer warps. A row narrower than a warp
+        # leaves lanes idle even at the fewest warps there are, and rejecting
+        # that too would leave nothing to tune.
+        if per_thread < self.MIN_ELEMS_PER_THREAD and config["num_warps"] > min(self.NUM_WARPS):
             return (
                 f"idle threads: {config['num_warps'] * caps.warp_size} threads for "
                 f"BLOCK_SIZE={block}"
