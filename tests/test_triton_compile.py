@@ -6,14 +6,15 @@ undefined names, illegal tile shapes, bad ``tl.*`` calls, and configurations
 that overrun shared memory. It also lets the fp16 GEMM's use of tensor cores
 be asserted from the generated PTX.
 
-What these tests cannot see: anything that depends on running. The standalone
-compile entry point does not run the software pipeliner, so the shared-memory
-figures here are single-buffer and the ``num_stages`` factor in the search
-space's estimate is checked on a GPU instead -- see
-``tests/test_kernels_gpu.py``.
+What these tests cannot see: anything that depends on running. Each GEMM is
+compiled specialized the way the JIT specializes a launch on contiguous
+operands, which is what lets the software pipeliner run, so the shared memory
+reported here is the multi-stage allocation a GPU would see.
 """
 
 from __future__ import annotations
+
+import dataclasses
 
 import pytest
 
@@ -25,23 +26,37 @@ triton = pytest.importorskip("triton", reason="Triton is required for the compil
 from compile_harness import (  # noqa: E402  (after importorskip by design)
     TARGETS,
     compile_for_target,
+    gemm_args,
     gemm_constexprs,
-    gemm_signature,
     row_signature,
+    specialize,
 )
 
 MATMUL_PROBLEM = Problem.create("matmul", "fp16", M=2048, N=4096, K=4096)
 
 
-def _compile_gemm(kernel, config: KernelConfig, dtype: str, capability: int, *, bias: bool):
+def _compile_gemm(
+    kernel, config: KernelConfig, dtype: str, capability: int, *, bias: bool, dims=None
+):
+    dims = dims or MATMUL_PROBLEM.dims_dict
+    args = gemm_args(parse_dtype(dtype), dims["M"], dims["N"], dims["K"], bias=bias)
+    signature, constexprs, attrs = specialize(kernel, args)
+    constexprs.update(gemm_constexprs(config, dtype))
+    signature.update(dict.fromkeys(constexprs, "constexpr"))
     return compile_for_target(
         kernel,
-        gemm_signature(dtype, bias=bias),
-        gemm_constexprs(config, dtype),
+        signature,
+        constexprs,
         capability=capability,
         num_warps=config["num_warps"],
         num_stages=config["num_stages"],
+        attrs=attrs,
     )
+
+
+def _caps_for(caps, capability: int):
+    """``caps`` as if the device had compute capability ``capability``."""
+    return dataclasses.replace(caps, compute_capability=f"{capability // 10}.{capability % 10}")
 
 
 @pytest.mark.parametrize("target_name,capability", TARGETS)
@@ -140,40 +155,88 @@ def test_fused_epilogue_costs_one_exponential_per_element():
     assert result.ptx.count("div.full.f32") == per_thread
 
 
-def test_shared_memory_estimate_bounds_the_tile():
-    """The search space's tile footprint matches what the compiler allocates.
+@pytest.mark.parametrize("capability", [80, 89, 90, 120])
+def test_gemm_k_loop_is_software_pipelined(capability):
+    """Each pipeline stage adds one operand tile to the compiler's allocation.
 
-    Compared against the single-buffer figure, which is what the standalone
-    compiler emits. The allocation is sometimes padded for the swizzled
-    operand layout, so the assertion is a factor-of-two band rather than
-    equality.
+    This is the ``num_stages`` factor of the search space's shared-memory
+    estimate, observed directly: the K loop is pipelined with asynchronous
+    copies, and the allocation grows by ``BLOCK_K * (BLOCK_M + BLOCK_N) *
+    itemsize`` per stage.
+    """
+    from kernelforge.kernels.matmul import matmul_kernel
+
+    allocated = []
+    for stages in (2, 3, 4):
+        config = KernelConfig(
+            "matmul",
+            BLOCK_M=128,
+            BLOCK_N=128,
+            BLOCK_K=64,
+            GROUP_M=8,
+            num_warps=4,
+            num_stages=stages,
+        )
+        result = _compile_gemm(matmul_kernel, config, "fp16", capability, bias=False)
+        assert "cp.async" in result.ptx, f"num_stages={stages}: the K loop was not pipelined"
+        allocated.append(result.shared_bytes)
+    tile_bytes = 64 * (128 + 128) * itemsize(parse_dtype("fp16"))
+    assert [b - a for a, b in zip(allocated, allocated[1:], strict=False)] == [tile_bytes] * 2
+
+
+@pytest.mark.parametrize("capability", [80, 89, 90, 120])
+def test_shared_memory_estimate_bounds_the_compiler(capability, a100_caps):
+    """The search space's estimate is never below what the compiler allocates.
+
+    Checked at every pipeline depth and in both regimes of the estimate: tiles
+    whose pipeline buffers dominate, and a configuration whose epilogue stages
+    a larger output tile through shared memory than the pipeline holds.
     """
     from kernelforge.kernels.matmul import matmul_kernel
     from kernelforge.tuning.search import MatmulSearchSpace
 
     space = MatmulSearchSpace()
-    for dtype in ("fp16", "fp32"):
-        width = itemsize(parse_dtype(dtype))
-        problem = Problem.create("matmul", dtype, M=2048, N=4096, K=4096)
-        for bm, bn, bk in [(32, 32, 32), (64, 64, 32), (128, 128, 64), (32, 128, 32)]:
+    caps = _caps_for(a100_caps, capability)
+    for dtype, (bm, bn, bk, warps) in [
+        ("fp16", (128, 128, 64, 4)),
+        ("fp32", (64, 64, 32, 4)),
+        ("fp16", (64, 128, 32, 8)),
+    ]:
+        problem = Problem.create("matmul", dtype, **MATMUL_PROBLEM.dims_dict)
+        for stages in (2, 3, 4):
             config = KernelConfig(
                 "matmul",
                 BLOCK_M=bm,
                 BLOCK_N=bn,
                 BLOCK_K=bk,
                 GROUP_M=8,
-                num_warps=4,
-                num_stages=1,
+                num_warps=warps,
+                num_stages=stages,
             )
-            result = _compile_gemm(matmul_kernel, config, dtype, 80, bias=False)
-            tile_bytes = bk * (bm + bn) * width
-            assert tile_bytes <= result.shared_bytes <= 2 * tile_bytes, (
-                f"{dtype} {bm}x{bn}x{bk}: compiler allocated {result.shared_bytes} B "
-                f"for a {tile_bytes} B tile"
+            result = _compile_gemm(matmul_kernel, config, dtype, capability, bias=False)
+            estimate = space.shared_memory_bytes(config, problem, caps)
+            assert result.shared_bytes <= estimate, (
+                f"sm{capability} {dtype} {config!r}: compiler allocated "
+                f"{result.shared_bytes} B, estimate {estimate} B"
             )
-            # At num_stages=1 the filter's estimate is exactly the tile size;
-            # the multi-stage factor is checked on a GPU.
-            assert space.shared_memory_bytes(config, problem) == tile_bytes
+
+
+def test_shared_memory_filter_admits_what_fits_an_rtx_4090(rtx4090_caps):
+    """A tile the compiler fits on an RTX 4090 must not be rejected for it.
+
+    128x128x64 over four stages keeps three operand tiles in flight on sm_89:
+    96 KiB against the card's 99 KiB opt-in limit. Counting one tile per
+    stage, as on Hopper, would reject it.
+    """
+    from kernelforge.kernels.matmul import matmul_kernel
+    from kernelforge.tuning.search import MatmulSearchSpace
+
+    config = KernelConfig(
+        "matmul", BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, GROUP_M=8, num_warps=8, num_stages=4
+    )
+    result = _compile_gemm(matmul_kernel, config, "fp16", 89, bias=False)
+    assert result.shared_bytes <= rtx4090_caps.max_shared_memory_per_block
+    assert MatmulSearchSpace().reject_reason(config, MATMUL_PROBLEM, rtx4090_caps) is None
 
 
 def test_every_candidate_in_the_budget_compiles(a100_caps):
@@ -186,13 +249,15 @@ def test_every_candidate_in_the_budget_compiles(a100_caps):
     from kernelforge.kernels.matmul import matmul_kernel
     from kernelforge.tuning.search import MatmulSearchSpace
 
-    candidates = MatmulSearchSpace().candidates(MATMUL_PROBLEM, a100_caps)
+    space = MatmulSearchSpace()
+    candidates = space.candidates(MATMUL_PROBLEM, a100_caps)
     assert candidates, "search space produced no candidates"
     sampled = candidates[::6]
     assert len(sampled) >= 6
     for config in sampled:
         result = _compile_gemm(matmul_kernel, config, "fp16", 80, bias=False)
         assert result.uses_tensor_cores(), f"{config!r} did not reach the tensor cores"
+        assert result.shared_bytes <= space.shared_memory_bytes(config, MATMUL_PROBLEM, a100_caps)
 
 
 @pytest.mark.slow
@@ -214,11 +279,13 @@ def test_full_candidate_budget_compiles(dims, a100_caps):
     from kernelforge.tuning.search import MatmulSearchSpace
 
     problem = Problem.create("matmul", "fp16", **dims)
-    candidates = MatmulSearchSpace().candidates(problem, a100_caps)
+    space = MatmulSearchSpace()
+    candidates = space.candidates(problem, a100_caps)
     assert candidates, f"no candidates for {dims}"
     for config in candidates:
-        result = _compile_gemm(matmul_kernel, config, "fp16", 80, bias=False)
+        result = _compile_gemm(matmul_kernel, config, "fp16", 80, bias=False, dims=dims)
         assert result.uses_tensor_cores(), f"{config!r} did not reach the tensor cores"
+        assert result.shared_bytes <= space.shared_memory_bytes(config, problem, a100_caps)
 
 
 @pytest.mark.parametrize("cols", [128, 1024, 4096, 8192])

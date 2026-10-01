@@ -296,22 +296,26 @@ class _BlockedGemmSpace(SearchSpace):
                 num_stages=stages,
             )
 
-    def shared_memory_bytes(self, config: KernelConfig, problem: Problem) -> int:
-        """Shared memory the software pipeline needs for the A and B tiles.
+    def shared_memory_bytes(self, config: KernelConfig, problem: Problem, caps: DeviceCaps) -> int:
+        """Shared memory for the pipelined operand tiles, or for the output tile.
 
-        Triton's pipeliner keeps ``num_stages`` in-flight copies of both
-        operand tiles so that the global loads for iteration *i+1* overlap the
-        ``tl.dot`` of iteration *i*, hence the ``num_stages`` factor.
+        Triton's pipeliner keeps several ``BLOCK_K * (BLOCK_M + BLOCK_N)``
+        operand tiles in shared memory so that the global loads for later
+        iterations overlap the ``tl.dot`` of the current one. On Ampere, Ada
+        and consumer Blackwell (sm_8x, sm_12x) it copies with ``cp.async`` and
+        keeps ``num_stages - 1`` tiles; on Hopper's wgmma path it keeps
+        ``num_stages``, which the estimate assumes for every other
+        architecture. The epilogue stages the ``BLOCK_M x BLOCK_N`` output tile
+        through shared memory for the store, reusing the pipeline buffers, so
+        the estimate is the larger of the two.
 
         How much of this is checked, and where:
 
-        * ``tests/test_triton_compile.py`` compiles each candidate for sm80 and
-          sm90 on a CPU-only machine and checks the single-buffer tile
-          footprint, ``BLOCK_K * (BLOCK_M + BLOCK_N) * itemsize``, against what
-          the compiler allocates. It cannot check the ``num_stages`` factor:
-          the standalone ``triton.compile`` entry point does not run the
-          software pipeliner, so its allocation stays at one buffer per operand
-          whatever ``num_stages`` says.
+        * ``tests/test_triton_compile.py`` compiles kernels on a CPU-only
+          machine, specialized the way the JIT specializes a launch on
+          contiguous operands, which is what lets the pipeliner run. It checks
+          that each stage adds one operand tile and that the estimate bounds
+          the compiler's allocation for sm80, sm89, sm90 and sm120.
         * ``tests/test_kernels_gpu.py`` checks two things against a real JIT
           launch: that this estimate is an *upper bound* on what a launch
           allocates, which is the property the filter needs; and separately
@@ -319,14 +323,17 @@ class _BlockedGemmSpace(SearchSpace):
           operand buffer, so the ``num_stages`` factor corresponds to the
           pipeliner's actual behaviour rather than to an assumption.
 
-        The estimate is therefore an upper bound used to reject configurations
-        before compiling them. Anything it lets through that the compiler then
-        rejects comes back as Triton's own ``OutOfResources`` and is recorded
-        as a compile failure, so an inaccurate model costs tuning time rather
-        than correctness.
+        On those architectures the estimate is an upper bound, used to reject
+        configurations before compiling them. Anything it lets through that
+        the compiler then rejects comes back as Triton's own
+        ``OutOfResources`` and is recorded as a compile failure, so an
+        inaccurate model costs tuning time rather than correctness.
         """
-        elems = config["num_stages"] * config["BLOCK_K"] * (config["BLOCK_M"] + config["BLOCK_N"])
-        return elems * itemsize(problem.dtype)
+        major = int(caps.compute_capability.split(".")[0])
+        buffers = config["num_stages"] - 1 if major in (8, 12) else config["num_stages"]
+        pipeline = buffers * config["BLOCK_K"] * (config["BLOCK_M"] + config["BLOCK_N"])
+        output = config["BLOCK_M"] * config["BLOCK_N"]
+        return max(pipeline, output) * itemsize(problem.dtype)
 
     def acc_regs_per_thread(self, config: KernelConfig) -> float:
         """fp32 accumulator registers each thread holds."""
@@ -343,7 +350,7 @@ class _BlockedGemmSpace(SearchSpace):
         bm, bn, bk = config["BLOCK_M"], config["BLOCK_N"], config["BLOCK_K"]
         width = itemsize(problem.dtype)
 
-        smem = self.shared_memory_bytes(config, problem)
+        smem = self.shared_memory_bytes(config, problem, caps)
         if smem > caps.max_shared_memory_per_block:
             return (
                 f"shared memory: {smem // 1024} KiB of tiles exceeds the "
