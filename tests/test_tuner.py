@@ -165,6 +165,36 @@ def test_baselines_are_measured_with_identical_settings(tuned):
     assert tuned.speedup_over("does_not_exist") is None
 
 
+def test_a_failing_torch_compile_baseline_does_not_lose_the_run(tmp_path, monkeypatch):
+    """Inductor errors surface on the first call; the tuned result must still be saved."""
+    from kernelforge.kernels.base import compiled_baseline
+
+    def failing_compile(fn, **kwargs):
+        def compiled(*args):
+            raise RuntimeError("simulated Inductor failure")
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", failing_compile)
+
+    class _CompiledBaselineOperator(_FakeOperator):
+        def baselines(self, problem, inputs):
+            return {
+                **super().baselines(problem, inputs),
+                "torch_compile": compiled_baseline(lambda x: x * 2, inputs),
+            }
+
+    db = ResultsDB(tmp_path / "results.db")
+    lines = []
+    result = Tuner(warmup=1, iterations=2, flush_l2=False, db=db, log=lines.append).tune(
+        _CompiledBaselineOperator(), PROBLEM, device="cpu"
+    )
+    assert set(result.baselines) == {"torch_eager"}
+    assert any("torch_compile unavailable" in line for line in lines)
+    assert db.counts()["results"] == result.tested + 1
+    db.close()
+
+
 def test_derived_metrics_use_the_operator_models(tuned):
     ms = tuned.best.median_ms
     assert tuned.tflops(ms) == pytest.approx(PROBLEM.dims_dict["n"] / (ms * 1e-3) / 1e12)
