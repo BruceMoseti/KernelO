@@ -21,11 +21,17 @@ Two methodological details that materially move GEMM numbers:
 * **Distribution, not mean.** A single mean hides bimodal behaviour from clock
   throttling and from the occasional preempted launch, so the full set of
   samples is summarised as median/p95/p99.
+
+The flushes also keep the GPU behind the host, so each start event is followed
+by its kernel rather than by the host's launch overhead. If the GPU has already
+reached the last start event when the host finishes enqueuing, it waited on the
+host at some point, and a ``RuntimeWarning`` says so.
 """
 
 from __future__ import annotations
 
 import time
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -185,7 +191,15 @@ def benchmark(
         fn()
         end[i].record()
 
+    gpu_caught_up = start[-1].query()
     torch.cuda.synchronize(cuda_device)
+    if gpu_caught_up:
+        warnings.warn(
+            "the GPU drained its queue during timing, so some samples may include host "
+            "launch latency rather than only GPU execution time",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     samples = [start[i].elapsed_time(end[i]) for i in range(iterations)]
     return summarize(
         samples,

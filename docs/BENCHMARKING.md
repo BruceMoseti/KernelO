@@ -51,6 +51,16 @@ by the time the event is recorded and is not inside the measured interval.
 
 Defaults: `warmup=25`, `iterations=200`. Both are CLI flags.
 
+### Host launch overhead
+
+A start event only brackets the kernel if the GPU is still busy with earlier
+work when the event is reached; otherwise the interval also covers the host
+enqueuing the call. The flushes keep the GPU behind the host. After enqueuing
+the last call, the harness asks whether its start event has already executed.
+If it has, the GPU waited on the host at some point, and a `RuntimeWarning`
+says that some samples may include host launch latency. Small problems, such as
+M=1 decode GEMMs, are the ones at risk.
+
 ### Cross-check
 
 `cross_check_median_ms` times the same callable with

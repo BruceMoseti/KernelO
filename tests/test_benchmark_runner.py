@@ -10,6 +10,7 @@ loop is correct rather than merely self-consistent.
 from __future__ import annotations
 
 import dataclasses
+import warnings
 
 import numpy as np
 import pytest
@@ -124,6 +125,27 @@ def test_gpu_path_uses_cuda_events(device):
     assert result.timer == "cuda_event"
     assert result.flushed_l2 is True
     assert result.median_ms > 0
+
+
+@pytest.mark.gpu
+def test_warns_when_the_gpu_waits_on_the_host(device):
+    """A callable that synchronises leaves the GPU idle while the host launches."""
+    x = torch.zeros(1, device=device)
+
+    def synchronizing() -> None:
+        x.add_(1)
+        torch.cuda.synchronize()
+
+    with pytest.warns(RuntimeWarning, match="host launch latency"):
+        benchmark(synchronizing, warmup=1, iterations=5, device=device)
+
+
+@pytest.mark.gpu
+def test_a_gpu_bound_loop_does_not_warn(device):
+    a = torch.randn(2048, 2048, device=device, dtype=torch.float16)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        benchmark(lambda: a @ a, warmup=5, iterations=50, device=device)
 
 
 @pytest.mark.gpu
