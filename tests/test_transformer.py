@@ -39,6 +39,22 @@ def test_unknown_backend_is_rejected():
         TransformerBlock(SMALL, device="cpu", dtype=torch.float32, backend="cutlass")
 
 
+def test_the_fused_kernel_gets_the_weight_layout_it_is_tuned_on():
+    """The config cache records shapes, not strides, so the layouts must match."""
+    from kernelforge.kernels.fused_linear import FusedLinearOperator
+    from kernelforge.tuning.config import Problem
+
+    block = TransformerBlock(SMALL, device="cpu", dtype=torch.float32)
+    problem = Problem.create("fused_linear", "fp32", M=1, N=SMALL.intermediate, K=SMALL.hidden)
+    _, tuned_weight, _ = FusedLinearOperator().make_inputs(problem, torch.device("cpu"))
+    assert block.mlp_up.weight.t().stride() == tuned_weight.stride()
+
+    # A checkpoint stores nn.Linear weights as contiguous (out, in); loading one
+    # copies into the existing storage, so the layout survives.
+    block.load_state_dict({k: v.contiguous() for k, v in block.state_dict().items()})
+    assert block.mlp_up.weight.t().stride() == tuned_weight.stride()
+
+
 def test_backends_agree_on_one_set_of_weights(device):
     """Swapping the kernels must not change the block's output.
 
