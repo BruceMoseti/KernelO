@@ -39,7 +39,7 @@ The harness (`kernelforge/benchmark/runner.py`) instead:
 
 1. Runs `warmup` iterations and synchronises. The first launch of a kernel pays
    for module loading and context setup; Triton's first call also compiles.
-2. For each of `iterations` measured runs, zeroes an L2-sized buffer, records a
+2. For each of `iterations` measured runs, zeroes the L2 flush buffer, records a
    start event, calls the function, records an end event.
 3. Synchronises **once**, after the whole loop, then reads the elapsed time of
    each event pair.
@@ -71,9 +71,11 @@ implementations — the fix is a larger problem, not more iterations.
 
 Re-running a kernel on the same tensors leaves the inputs resident in L2, and
 for a problem whose working set fits, the reported throughput is one the kernel
-would never reach in a model where the inputs are not already cached. An
-L2-sized buffer (from `DeviceCaps.l2_cache_bytes`) is zeroed before each timed
-iteration.
+would never reach in a model where the inputs are not already cached. A buffer
+of max(256 MiB, 2 × L2) bytes (L2 from `DeviceCaps.l2_cache_bytes`) is zeroed
+before each timed iteration. One L2's worth of writes does not reliably evict
+the inputs, because L2 replacement is not strict LRU, and 256 MiB matches
+`triton.testing.do_bench`.
 
 This makes small problems look slower than a naive harness reports, which is
 the point. `--no-flush-l2` disables it; `TimingResult.flushed_l2` records which

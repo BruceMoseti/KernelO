@@ -9,10 +9,13 @@ loop is correct rather than merely self-consistent.
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 import torch
 
+from kernelforge.benchmark import runner
 from kernelforge.benchmark.runner import (
     TIMER_RESOLUTION_MS,
     benchmark,
@@ -96,6 +99,14 @@ def test_cpu_path_is_labelled_so_it_cannot_be_mistaken_for_a_gpu_timing():
 def test_benchmark_validates_its_arguments(warmup, iterations):
     with pytest.raises(ValueError):
         benchmark(lambda: None, warmup=warmup, iterations=iterations, device="cpu")
+
+
+@pytest.mark.parametrize("l2_mib, flush_mib", [(40, 256), (72, 256), (160, 320)])
+def test_l2_flush_buffer_is_twice_l2_and_at_least_256_mib(monkeypatch, l2_mib, flush_mib):
+    """One L2's worth of writes does not reliably evict it: replacement is not strict LRU."""
+    caps = dataclasses.replace(runner.device_caps(), l2_cache_bytes=l2_mib * 2**20)
+    monkeypatch.setattr(runner, "device_caps", lambda device: caps)
+    assert runner._l2_flush_buffer(torch.device("cpu")).numel() == flush_mib * 2**20
 
 
 def test_timing_result_serialises_without_samples():

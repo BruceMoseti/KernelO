@@ -444,9 +444,9 @@ that matter most:
   the whole measurement loop, so per-iteration synchronisation cost stays out of
   the samples. A naive `perf_counter` around a launch measures enqueue time, not
   execution time.
-- **L2 flushed before each timed iteration.** An L2-sized buffer is zeroed, and
-  because the stream is in-order the zeroing is enqueued before `start_event` and
-  is not inside the measured interval. This makes small problems look *slower*
+- **L2 flushed before each timed iteration.** A max(256 MiB, 2 × L2) buffer is
+  zeroed, and because the stream is in-order the zeroing is enqueued before
+  `start_event` and is not inside the measured interval. This makes small problems look *slower*
   than a naive harness reports, which is the point: a cache-resident benchmark
   reports a bandwidth the kernel will never see in a real model.
 - **Ranked on the median** of 200 iterations after 25 warmup. The minimum is the
