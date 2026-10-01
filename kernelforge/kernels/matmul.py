@@ -14,6 +14,13 @@ Triton tutorial instead wraps row and column indices with `% M` and `% N`, which
 unmasked but computes duplicate rows that are then discarded. Here every load is masked, so no
 program ever reads outside the matrix, at the cost of a little predicate arithmetic.
 
+Pipelining. With num_stages > 1, Triton prefetches upcoming K tiles with asynchronous copies
+(cp.async), which move 16-byte-aligned vectors. For 16-bit dtypes it uses them for an operand
+only when it can prove that the operand's contiguous dimension and leading stride are multiples
+of 16 elements: K for A, N for B (M does not matter). Other shapes stay correct, but that
+operand is loaded synchronously every iteration. fp32's 4-byte copies do not need this
+alignment. tests/test_compile.py checks this by compiling for sm_80 and sm_90.
+
 Program order (L2 reuse). The grid is 1-D. With row-by-row numbering, the W programs resident
 at once would cover W tiles of one tile row: one row panel of A, but W column panels of B.
 Instead, consecutive ids walk down a band of GROUP_M tile rows before moving to the next tile

@@ -3,8 +3,10 @@
 Hardware-aware GPU kernel autotuning and inference optimization for transformer workloads.
 
 > **Status:** milestone M1 (foundation) is implemented. Kernel logic is verified on CPU with
-> Triton's interpreter. Nothing has run on a GPU yet, so this repository contains no performance
-> numbers. `scripts/gpu_validate.sh` runs the full GPU validation once hardware is available.
+> Triton's interpreter, and every kernel is compiled for Ampere (sm_80) and Hopper (sm_90) to
+> check what the compiler generates. Nothing has run on a GPU yet, so this repository contains no
+> performance numbers. `scripts/gpu_validate.sh` runs the full GPU validation once hardware is
+> available.
 
 ## What M1 contains
 
@@ -17,6 +19,7 @@ Hardware-aware GPU kernel autotuning and inference optimization for transformer 
 | `KernelConfig`, search space, pruning rules | `kernelforge/tuning/config.py`, `search.py` | yes | whether pruning ever drops the true best |
 | Tuner, SQLite results, config cache | `kernelforge/tuning/` | yes, with a stand-in timer | tuning with real timings |
 | CLI | `kernelforge/cli/main.py` | `cache` commands; `tune` flow with stand-ins | `tune matmul` on hardware |
+| Compiled code for real GPUs | `tests/test_compile.py` | every kernel compiles for sm_80 and sm_90; 16-bit MatMul lowers to tensor-core MMA (`mma.sync`, `wgmma`) and IEEE fp32 does not; the K loop is pipelined for 16-element-aligned operands; compiled shared memory stays within the pruning bound | running the compiled code |
 
 bf16 vector add and bf16 MatMul are GPU-only because Triton 3.8's interpreter does bf16
 arithmetic on the raw storage bits.
