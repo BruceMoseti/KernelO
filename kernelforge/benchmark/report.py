@@ -19,7 +19,7 @@ from math import prod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from kernelforge.db import ResultsDB
+from kernelforge.db import ENVIRONMENT_FIELDS, ResultsDB
 
 if TYPE_CHECKING:  # pandas is an optional extra; see `_require_dependencies`
     from pandas import DataFrame
@@ -44,18 +44,6 @@ LABEL_TITLES = {
 }
 
 MEMORY_BOUND_OPERATIONS = frozenset({"rmsnorm", "softmax", "vector_add"})
-
-#: What two rows must share to be compared: one GPU, and one CUDA, driver,
-#: PyTorch and Triton. Rows from different environments are reported side by
-#: side and never divided into one another.
-ENVIRONMENT_FIELDS = (
-    ("GPU", "gpu_name"),
-    ("Compute capability", "gpu_arch"),
-    ("CUDA", "cuda_version"),
-    ("Driver", "driver_version"),
-    ("PyTorch", "torch_version"),
-    ("Triton", "triton_version"),
-)
 
 
 @dataclass

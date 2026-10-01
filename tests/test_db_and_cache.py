@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import pytest
@@ -155,6 +156,34 @@ def test_best_per_label_takes_the_fastest_correct_row(db):
     # 0.4 ms was faster but incorrect, so it must not win.
     assert best["kernelforge"] == pytest.approx(700.0)
     assert best["torch_eager"] == pytest.approx(1500.0)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("gpu_name", "NVIDIA H100 80GB HBM3"),
+        ("torch_version", "2.99.0"),
+        ("triton_version", "9.9.0"),
+    ],
+)
+def test_best_per_label_never_ranks_across_environments(db, field, value):
+    environment = capture_environment()
+    for env, median in (
+        (environment, 1.0),
+        (dataclasses.replace(environment, **{field: value}), 0.5),
+    ):
+        db.record(
+            db.start_run(env),
+            PROBLEM,
+            Measurement(
+                label="kernelforge",
+                status="ok",
+                verification=passing_verification(),
+                timing=timing(median),
+            ),
+        )
+    medians = sorted(row["median_us"] for row in db.best_per_label())
+    assert medians == [pytest.approx(500.0), pytest.approx(1000.0)]
 
 
 def test_rows_can_be_filtered(db):
