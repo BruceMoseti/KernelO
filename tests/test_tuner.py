@@ -6,6 +6,9 @@ ways a real kernel configuration fails: one raises at launch, one returns the
 wrong answer, one is correct but slow, one is correct and fast. That makes the
 property that matters testable without a GPU -- an incorrect configuration is
 never ranked, however fast it is.
+
+Latencies come from a stand-in timer, not the wall clock, so the ranking does
+not depend on how busy the machine running the tests is.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from collections.abc import Iterator
 import pytest
 import torch
 
+from kernelforge.benchmark.runner import summarize
 from kernelforge.db import ResultsDB
 from kernelforge.kernels.base import Operator
 from kernelforge.runtime.env import DeviceCaps
@@ -34,6 +38,11 @@ MODE_RAISES = 1
 MODE_WRONG_ANSWER = 2
 MODE_CORRECT_SLOW = 3
 MODE_INFEASIBLE = 4
+
+# Medians, in ms, that the stand-in timer reports. The wrong answer is the
+# fastest of all, so it would win if it were ever timed and ranked.
+LATENCY_MS = {MODE_WRONG_ANSWER: 0.5, MODE_CORRECT_FAST: 1.0, MODE_CORRECT_SLOW: 2.0}
+BASELINE_MS = 3.0
 
 
 class _FakeSpace(SearchSpace):
@@ -55,6 +64,10 @@ class _FakeOperator(Operator):
     name = "cpu_double"
     config_order = ("MODE",)
 
+    def __init__(self) -> None:
+        self.last_config: KernelConfig | None = None
+        self.timed: list[KernelConfig] = []
+
     def search_space(self) -> _FakeSpace:
         return _FakeSpace()
 
@@ -70,17 +83,30 @@ class _FakeOperator(Operator):
 
     def run(self, config, *inputs):
         (x,) = inputs
+        self.last_config = config
         mode = config["MODE"]
         if mode == MODE_RAISES:
             raise RuntimeError("simulated launch failure")
         if mode == MODE_WRONG_ANSWER:
             return x * 3
-        if mode == MODE_CORRECT_SLOW:
-            out = x.clone()
-            for _ in range(40):
-                out = out * 1.0
-            return out * 2
         return x * 2
+
+    def synthetic_timer(self, fn, *, warmup, iterations, device, flush_l2):
+        """Stands in for ``benchmark``: the LATENCY_MS of whichever config ``fn`` runs."""
+        self.last_config = None
+        fn()
+        if self.last_config is None:
+            median = BASELINE_MS
+        else:
+            self.timed.append(self.last_config)
+            median = LATENCY_MS[self.last_config["MODE"]]
+        return summarize(
+            [median] * iterations,
+            warmup=warmup,
+            iterations=iterations,
+            timer="synthetic",
+            flushed_l2=flush_l2,
+        )
 
     def default_config(self, problem):
         return KernelConfig("cpu_double", MODE=MODE_CORRECT_FAST)
@@ -100,9 +126,20 @@ PROBLEM = Problem.create("cpu_double", "fp32", n=200_000)
 
 
 @pytest.fixture
-def tuned():
-    tuner = Tuner(warmup=2, iterations=5, flush_l2=False, measure_baselines=True)
-    return tuner.tune(_FakeOperator(), PROBLEM, device="cpu")
+def operator():
+    return _FakeOperator()
+
+
+@pytest.fixture
+def tuned(operator):
+    tuner = Tuner(
+        warmup=2,
+        iterations=5,
+        flush_l2=False,
+        measure_baselines=True,
+        timer=operator.synthetic_timer,
+    )
+    return tuner.tune(operator, PROBLEM, device="cpu")
 
 
 def test_counts_cover_every_stage(tuned):
@@ -122,12 +159,13 @@ def test_each_failure_mode_is_classified(tuned):
     assert MODE_INFEASIBLE not in by_mode
 
 
-def test_incorrect_configurations_are_never_ranked(tuned):
+def test_incorrect_configurations_are_never_ranked(tuned, operator):
     """The central guarantee: ranking only ever sees verified candidates."""
     ranked_modes = [o.config["MODE"] for o in tuned.ranked()]
     assert MODE_WRONG_ANSWER not in ranked_modes
     assert MODE_RAISES not in ranked_modes
     assert set(ranked_modes) == {MODE_CORRECT_FAST, MODE_CORRECT_SLOW}
+    assert MODE_WRONG_ANSWER not in [config["MODE"] for config in operator.timed]
 
 
 def test_failed_candidates_carry_no_timing(tuned):
@@ -141,6 +179,7 @@ def test_failed_candidates_carry_no_timing(tuned):
 def test_best_is_the_fastest_correct_candidate(tuned):
     assert tuned.best is not None
     assert tuned.best.config["MODE"] == MODE_CORRECT_FAST
+    assert tuned.best.median_ms == LATENCY_MS[MODE_CORRECT_FAST]
     assert tuned.best_config == KernelConfig("cpu_double", MODE=MODE_CORRECT_FAST)
     assert tuned.ranked()[0].median_ms <= tuned.ranked()[-1].median_ms
 
