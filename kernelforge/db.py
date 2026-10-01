@@ -302,8 +302,7 @@ class ResultsDB:
 
         Distinct from :meth:`rows`, which returns *results* joined to their
         run: a run that recorded nothing still happened, and the provenance
-        table in a report should reflect the latest run rather than the latest
-        run that happened to produce a measurement.
+        table in a report lists its environment too.
         """
         return [dict(row) for row in self._conn.execute("SELECT * FROM runs ORDER BY run_id")]
 
