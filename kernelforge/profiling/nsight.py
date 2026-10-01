@@ -23,7 +23,6 @@ for a benchmark sweep.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys
@@ -42,17 +41,9 @@ SECTIONS: dict[str, str] = {
 
 DEFAULT_SECTIONS = ("launch", "occupancy", "throughput", "memory", "stalls")
 
-#: Environment variable the child process checks to avoid recursing: the
-#: parent re-executes itself under ncu, and the child must not do so again.
-CHILD_ENV_FLAG = "KERNELFORGE_UNDER_NCU"
-
 
 def ncu_available() -> bool:
     return shutil.which("ncu") is not None
-
-
-def under_ncu() -> bool:
-    return os.environ.get(CHILD_ENV_FLAG) == "1"
 
 
 @dataclass(frozen=True)
@@ -179,10 +170,7 @@ def run(
         launch_skip=launch_skip,
         report_path=report_path,
     )
-    environment = {**os.environ, CHILD_ENV_FLAG: "1"}
-    result = subprocess.run(
-        command, capture_output=True, text=True, timeout=timeout, env=environment
-    )
+    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     return NsightRun(
         command=tuple(command),
         returncode=result.returncode,

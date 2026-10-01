@@ -42,7 +42,7 @@ tests — and a surprising amount of that is verified without a GPU at all:
 | An incorrect configuration is never ranked | the tuner driven end to end on a CPU operator whose configs fail in each real way |
 | Search-space filters are device-specific | a tile feasible on an A100 is rejected for an RTX 4090, both without the hardware |
 
-On a CPU-only machine, `pytest -m "not gpu"` gives **159 passed, 1 skipped**.
+On a CPU-only machine, `pytest -m "not gpu"` gives **167 passed, 1 skipped**.
 A further **292** tests need a CUDA device and skip with a stated reason
 rather than failing, so the same suite runs in ordinary CI and on a GPU runner.
 
@@ -246,7 +246,9 @@ kernelforge compare   transformer --seq 2048
 kernelforge report                               # reports/summary.md + figures
 ```
 
-`kernelforge tune` prints:
+`kernelforge tune` prints the following. The latencies are shown as dots
+because they are not measurements — only the shape-derived quantities, which
+do not depend on the hardware, are filled in:
 
 ```
 GPU:    <your GPU>
@@ -254,31 +256,40 @@ Shape:  2048 x 4096 x 4096  (M/N/K)
 dtype:  FP16
 
 Verifying candidates... (48 to check)
-N / 48 configurations passed correctness
+.. / 48 configurations passed correctness
 Benchmarking...
 
-Search space: 432 grid points, 180 feasible, 48 measured in Ns
+Search space: 432 grid points, 180 feasible, 48 measured in ..s
 
 Best configuration
 ------------------
-BLOCK_M:     ..
-BLOCK_N:     ..
-BLOCK_K:     ..
-GROUP_M:     ..
-num_warps:   ..
-num_stages:  ..
+BLOCK_M:      ..
+BLOCK_N:      ..
+BLOCK_K:      ..
+GROUP_M:       8
+num_warps:    ..
+num_stages:   ..
 
 Performance
 -----------
-torch_eager:        .... ms
-torch_compile:      .... ms
-triton_baseline:    .... ms
-triton_autotune:    .... ms
-kernelforge:        .... ms
-speedup vs torch_eager        ....x
-speedup vs triton_baseline    ....x
-throughput                    .... TFLOP/s
+triton_autotune:     ..... ms
+torch_compile:       ..... ms
+torch_eager:         ..... ms
+triton_baseline:     ..... ms
+kernelforge:         ..... ms
+
+speedup vs torch_eager:               ...x
+speedup vs torch_compile:             ...x
+speedup vs triton_baseline:           ...x
+speedup vs triton_autotune:           ...x
+throughput:                     ... TFLOP/s
+arithmetic intensity:       1024.0 FLOP/byte
 ```
+
+That last line is the one to read first. At 1024 FLOP/byte this shape is far
+above an A100's ridge point of ~153, so it genuinely can be compute bound and
+tuning the tiling is worth doing. A shape below the ridge point cannot be, and
+the honest conclusion there is that the kernel is already finished.
 
 `kernelforge report` reads the database and writes `reports/summary.md`,
 per-operator CSV exports, latency and throughput charts, a bandwidth chart for

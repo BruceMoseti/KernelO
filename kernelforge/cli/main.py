@@ -108,6 +108,8 @@ def command_env(args: argparse.Namespace) -> int:
 
 # --- tune ----------------------------------------------------------------
 def _render_tuning(result, operator) -> str:
+    from kernelforge.benchmark import metrics
+
     lines = [_rule("Best configuration")]
     best = result.best
     if best is None:
@@ -118,22 +120,34 @@ def _render_tuning(result, operator) -> str:
 
     lines.append(best.config.render(operator.config_order))
 
-    memory_bound = result.memory_bound
     lines.append(_rule("Performance"))
-    width = max((len(label) for label in result.baselines), default=0) + 2
-    for label, timing in sorted(result.baselines.items(), key=lambda kv: kv[1].median_ms):
-        lines.append(f"{label + ':':<{width}} {timing.median_ms:>8.3f} ms")
-    lines.append(f"{'kernelforge:':<{width}} {best.median_ms:>8.3f} ms")
+    latencies = sorted(result.baselines.items(), key=lambda kv: kv[1].median_ms)
+    latencies.append(("kernelforge", best.timing))
+    width = max(len(label) for label, _ in latencies) + 2
+    lines += [f"{label + ':':<{width}}{timing.median_ms:>9.3f} ms" for label, timing in latencies]
 
-    for label in ("torch_eager", "triton_baseline", "triton_autotune", "cuda"):
-        speedup = result.speedup_over(label)
-        if speedup is not None:
-            lines.append(f"{'speedup vs ' + label:<{width + 4}} {speedup:>6.2f}x")
-
-    if memory_bound:
-        lines.append(f"{'bandwidth':<{width + 4}} {result.gbps(best.median_ms):>6.1f} GB/s")
+    derived = [
+        (f"speedup vs {label}", f"{result.speedup_over(label):.2f}x")
+        for label in ("torch_eager", "torch_compile", "triton_baseline", "triton_autotune", "cuda")
+        if result.speedup_over(label) is not None
+    ]
+    if result.memory_bound:
+        derived.append(("bandwidth", f"{result.gbps(best.median_ms):.1f} GB/s"))
     else:
-        lines.append(f"{'throughput':<{width + 4}} {result.tflops(best.median_ms):>6.1f} TFLOP/s")
+        derived.append(("throughput", f"{result.tflops(best.median_ms):.1f} TFLOP/s"))
+    # Arithmetic intensity against the device's own FLOP/byte ratio is the
+    # first-order answer to "what stops this kernel going faster": below the
+    # ridge point, no tiling gets past the memory system.
+    derived.append(
+        (
+            "arithmetic intensity",
+            f"{metrics.arithmetic_intensity(result.flops, result.bytes_moved):.1f} FLOP/byte",
+        )
+    )
+    derived_width = max(len(label) for label, _ in derived) + 2
+    lines.append("")
+    lines += [f"{label + ':':<{derived_width}}{value:>16}" for label, value in derived]
+
     if best.timing is not None and best.timing.at_timer_resolution:
         lines.append(
             "\nWarning: median latency is at CUDA event resolution; "
@@ -377,7 +391,53 @@ def _compare_transformer(args: argparse.Namespace) -> int:
 
 
 # --- profile -------------------------------------------------------------
+def nsight_child_argv(args: argparse.Namespace) -> list[str]:
+    """CLI arguments for the single-launch process that ``ncu`` profiles.
+
+    Rebuilt from the parsed arguments rather than sliced out of ``sys.argv``:
+    slicing drops any shape flag written after ``--backend``, which would
+    silently profile the default shape instead of the requested one. The cache
+    is passed through so the child picks the same configuration the parent
+    would, and the database is switched off because one serialised launch under
+    a profiler is not a measurement worth recording.
+    """
+    argv = ["profile", args.operation, "--dtype", args.dtype]
+    for flag, value in (
+        ("-m", args.m),
+        ("-n", args.n),
+        ("-k", args.k),
+        ("--rows", args.rows),
+        ("--cols", args.cols),
+        ("--elements", args.elements),
+    ):
+        if value is not None:
+            argv += [flag, str(value)]
+    if args.no_cache:
+        argv.append("--no-cache")
+    else:
+        argv += ["--cache", args.cache]
+    return argv + ["--no-db", "--backend", "launch-once"]
+
+
 def command_profile(args: argparse.Namespace) -> int:
+    # Handled before any device work: the parent only has to assemble a command
+    # line, and allocating this problem's inputs in both processes would double
+    # its memory footprint for nothing.
+    if args.backend == "nsight":
+        from kernelforge.profiling import nsight
+
+        if not nsight.ncu_available():
+            print("ncu not found on PATH; install NVIDIA Nsight Compute.", file=sys.stderr)
+            return 2
+        run = nsight.run(
+            nsight.self_command(nsight_child_argv(args)),
+            sections=tuple(args.sections),
+            report_path=args.report,
+            launch_count=1,
+        )
+        print(run.render())
+        return 0 if run.ok else 1
+
     from kernelforge.kernels import get_operator
     from kernelforge.runtime.dispatch import select_config
     from kernelforge.runtime.env import require_cuda
@@ -389,29 +449,11 @@ def command_profile(args: argparse.Namespace) -> int:
     selection = select_config(operator, problem, cache=_open_cache(args), device=device)
 
     if args.backend == "launch-once":
-        operator.run(selection.config, *inputs)
         import torch
 
+        operator.run(selection.config, *inputs)
         torch.cuda.synchronize()
         return 0
-
-    if args.backend == "nsight":
-        from kernelforge.profiling import nsight
-
-        if not nsight.ncu_available():
-            print("ncu not found on PATH; install NVIDIA Nsight Compute.", file=sys.stderr)
-            return 2
-        child = nsight.self_command(
-            [*sys.argv[1:][: _profile_argv_length(args)], "--backend", "launch-once"]
-        )
-        run = nsight.run(
-            child,
-            sections=tuple(args.sections),
-            report_path=args.report,
-            launch_count=1,
-        )
-        print(run.render())
-        return 0 if run.ok else 1
 
     from kernelforge.profiling import compare_launch_counts
 
@@ -423,15 +465,6 @@ def command_profile(args: argparse.Namespace) -> int:
         print(result.render())
         print()
     return 0
-
-
-def _profile_argv_length(args: argparse.Namespace) -> int:
-    """Drop any ``--backend`` already present before re-invoking under ncu."""
-    argv = sys.argv[1:]
-    if "--backend" in argv:
-        index = argv.index("--backend")
-        return index
-    return len(argv)
 
 
 # --- report --------------------------------------------------------------

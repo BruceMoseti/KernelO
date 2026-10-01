@@ -26,6 +26,10 @@ pytestmark = pytest.mark.gpu
 
 DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
+CORRECTNESS_SHAPES = [
+    tuple(p.dims_dict.values()) for p in workloads.problems("rmsnorm", "correctness", "fp16")
+]
+
 
 def inputs(rows, cols, dtype, device, seed=0):
     gen = torch.Generator(device=device).manual_seed(seed)
@@ -34,7 +38,7 @@ def inputs(rows, cols, dtype, device, seed=0):
     return x, (gamma * 0.1 + 1.0).to(dtype)
 
 
-@pytest.mark.parametrize("shape", workloads._ROW_SHAPES["correctness"])
+@pytest.mark.parametrize("shape", CORRECTNESS_SHAPES)
 @pytest.mark.parametrize("dtype", DTYPES)
 def test_default_config_across_awkward_shapes(shape, dtype, device):
     from kernelforge.kernels.rmsnorm import default_config, rmsnorm, rmsnorm_reference

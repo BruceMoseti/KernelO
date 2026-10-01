@@ -26,7 +26,7 @@ unit testable against the properties of a GPU that is not attached.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 from itertools import product
 
 from kernelforge.dtypes import itemsize
@@ -398,13 +398,21 @@ class _RowReductionSpace(SearchSpace):
     NUM_WARPS = (1, 2, 4, 8, 16)
     ROWS_PER_PROGRAM = (1, 2, 4, 8)
 
-    #: A row wider than this cannot be held in registers by a single-pass
-    #: kernel; see the guard in the kernel wrappers.
-    MAX_BLOCK_SIZE = 65536
-
     #: Elements each thread holds in registers during the reduction.
     MIN_ELEMS_PER_THREAD = 1
     MAX_ELEMS_PER_THREAD = 64
+
+    #: Widest row a single-pass kernel will accept; the wrappers raise above
+    #: it rather than silently producing a wrong answer.
+    #:
+    #: Tied to ``MAX_ELEMS_PER_THREAD`` on purpose. The default configuration
+    #: allocates one warp per 256 columns up to 8 warps, so at 16384 columns a
+    #: thread already holds ``16384 / 256 = 64`` elements -- exactly the limit
+    #: above. A wider row would hand the default configuration a register
+    #: demand the search space itself rejects. Real transformers top out at a
+    #: hidden size of 8192, so this is not a constraint in practice; a wider
+    #: row needs a two-pass kernel, which is not implemented.
+    MAX_BLOCK_SIZE = MAX_ELEMS_PER_THREAD * 8 * 32
 
     def grid(self, problem: Problem) -> Iterator[KernelConfig]:
         block = next_power_of_2(problem.dims_dict["cols"])
@@ -504,7 +512,3 @@ def search_space(operation: str, **kwargs) -> SearchSpace:
         raise ValueError(
             f"no search space for {operation!r}; known: {sorted(SEARCH_SPACES)}"
         ) from None
-
-
-def dims_signature(problem: Problem) -> Sequence[str]:
-    return [name for name, _ in problem.dims]

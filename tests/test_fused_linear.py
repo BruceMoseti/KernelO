@@ -26,6 +26,10 @@ pytestmark = pytest.mark.gpu
 
 DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
+CORRECTNESS_SHAPES = [
+    tuple(p.dims_dict.values()) for p in workloads.problems("fused_linear", "correctness", "fp16")
+]
+
 
 def inputs(m, k, n, dtype, device, seed=0):
     gen = torch.Generator(device=device).manual_seed(seed)
@@ -48,7 +52,7 @@ def config(block_m, block_n, block_k, warps, stages) -> KernelConfig:
     )
 
 
-@pytest.mark.parametrize("shape", workloads._MATMUL_SHAPES["correctness"])
+@pytest.mark.parametrize("shape", CORRECTNESS_SHAPES)
 @pytest.mark.parametrize("dtype", DTYPES)
 def test_fusion_matches_the_unfused_sequence(shape, dtype, device):
     """The comparison that matters: same answer as matmul + bias + gelu."""

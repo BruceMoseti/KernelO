@@ -205,6 +205,30 @@ def test_rmsnorm_space_scales_block_size_to_the_row(a100_caps):
         assert {c["BLOCK_SIZE"] for c in candidates} == {expected}
 
 
+@pytest.mark.parametrize("operation", ["rmsnorm", "softmax"])
+def test_default_config_is_feasible_at_the_single_pass_limit(operation, a100_caps):
+    """The widest accepted row must not hand the default config a bad setting.
+
+    The default allocates one warp per 256 columns up to 8 warps, so at the
+    limit a thread holds exactly ``MAX_ELEMS_PER_THREAD`` elements. Raising
+    the width limit without revisiting the heuristic would produce a default
+    configuration the search space itself rejects.
+    """
+    # The default heuristic lives with the kernel, so this one test needs
+    # Triton importable; the rest of this module does not.
+    pytest.importorskip("triton")
+    from kernelforge.kernels import get_operator
+
+    space = search_space(operation)
+    cols = space.MAX_BLOCK_SIZE
+    problem = Problem.create(operation, "fp16", rows=1024, cols=cols)
+    config = get_operator(operation).default_config(problem)
+    assert config["BLOCK_SIZE"] == cols
+    per_thread = cols / (config["num_warps"] * a100_caps.warp_size)
+    assert per_thread <= space.MAX_ELEMS_PER_THREAD
+    assert space.reject_reason(config, problem, a100_caps) is None
+
+
 def test_rmsnorm_rejects_rows_per_program_larger_than_the_batch(a100_caps):
     problem = Problem.create("rmsnorm", "fp16", rows=2, cols=512)
     for config in RMSNormSearchSpace().candidates(problem, a100_caps):

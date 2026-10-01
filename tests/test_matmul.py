@@ -26,6 +26,12 @@ pytestmark = pytest.mark.gpu
 
 DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
+#: The awkward shapes from the public workload suite: primes, one-off-a-tile
+#: sizes, and degenerate single rows and columns.
+CORRECTNESS_SHAPES = [
+    tuple(p.dims_dict.values()) for p in workloads.problems("matmul", "correctness", "fp16")
+]
+
 #: Tile shapes chosen to stress masking from both ends: the smallest tile the
 #: search space allows, the largest, and asymmetric ones.
 TILE_CONFIGS = (
@@ -61,7 +67,7 @@ def reference(a, b):
         return torch.matmul(a, b)
 
 
-@pytest.mark.parametrize("shape", workloads._MATMUL_SHAPES["correctness"])
+@pytest.mark.parametrize("shape", CORRECTNESS_SHAPES)
 @pytest.mark.parametrize("dtype", DTYPES)
 def test_default_config_across_awkward_shapes(shape, dtype, device):
     from kernelforge.kernels.matmul import DEFAULT_CONFIG, matmul

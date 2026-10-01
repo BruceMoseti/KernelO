@@ -20,8 +20,15 @@ pytestmark = pytest.mark.gpu
 
 DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
+CORRECTNESS_ROW_SHAPES = [
+    tuple(p.dims_dict.values()) for p in workloads.problems("softmax", "correctness", "fp16")
+]
+CORRECTNESS_ELEMENT_COUNTS = [
+    p["n"] for p in workloads.problems("vector_add", "correctness", "fp16")
+]
 
-@pytest.mark.parametrize("shape", workloads._ROW_SHAPES["correctness"])
+
+@pytest.mark.parametrize("shape", CORRECTNESS_ROW_SHAPES)
 @pytest.mark.parametrize("dtype", DTYPES)
 def test_softmax_across_awkward_shapes(shape, dtype, device):
     from kernelforge.kernels.softmax import default_config, softmax
@@ -102,7 +109,7 @@ def test_softmax_rejects_non_2d_input(device):
         softmax(torch.zeros(2, 3, 4, device=device, dtype=torch.float16))
 
 
-@pytest.mark.parametrize("n", workloads._VECTOR_SHAPES["correctness"])
+@pytest.mark.parametrize("n", CORRECTNESS_ELEMENT_COUNTS)
 @pytest.mark.parametrize("dtype", DTYPES)
 def test_vector_add_across_sizes(n, dtype, device):
     from kernelforge.kernels.vector_add import DEFAULT_CONFIG, vector_add

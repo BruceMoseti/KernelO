@@ -41,10 +41,6 @@ class KernelRecord:
     launches: int
     device_time_us: float
 
-    @property
-    def device_time_per_launch_us(self) -> float:
-        return self.device_time_us / self.launches if self.launches else 0.0
-
 
 @dataclass(frozen=True)
 class ProfileResult:

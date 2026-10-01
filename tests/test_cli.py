@@ -124,6 +124,48 @@ def test_cache_clear_reports_what_it_removed(capsys, tmp_path):
     assert not path.exists()
 
 
+def test_nsight_child_argv_preserves_the_requested_shape():
+    """The ncu target must profile the shape that was asked for.
+
+    Rebuilding the child command from the parsed arguments rather than slicing
+    ``sys.argv`` is what makes this hold when a shape flag follows
+    ``--backend``.
+    """
+    from kernelforge.cli.main import nsight_child_argv
+
+    args = parse(
+        ["profile", "matmul", "--backend", "nsight", "-m", "512", "-n", "1024", "-k", "256"]
+    )
+    child = nsight_child_argv(args)
+    assert child[:2] == ["profile", "matmul"]
+    for flag, value in (("-m", "512"), ("-n", "1024"), ("-k", "256")):
+        assert child[child.index(flag) + 1] == value
+    # The child runs exactly one launch and records nothing.
+    assert child[-2:] == ["--backend", "launch-once"]
+    assert "--no-db" in child
+    assert child.count("--backend") == 1
+
+
+def test_nsight_child_argv_passes_the_cache_through():
+    """The child has to select the same configuration as the parent."""
+    from kernelforge.cli.main import nsight_child_argv
+
+    args = parse(["profile", "rmsnorm", "--rows", "64", "--cols", "128", "--cache", "/tmp/kf.json"])
+    child = nsight_child_argv(args)
+    assert child[child.index("--cache") + 1] == "/tmp/kf.json"
+
+    args = parse(["profile", "rmsnorm", "--no-cache"])
+    assert "--no-cache" in nsight_child_argv(args)
+    assert "--cache" not in nsight_child_argv(args)
+
+
+def test_nsight_self_command_targets_the_module_entry_point():
+    from kernelforge.profiling.nsight import self_command
+
+    command = self_command(["profile", "matmul"])
+    assert command[1:3] == ["-m", "kernelforge.cli.main"]
+
+
 def test_nsight_sections_are_validated():
     from kernelforge.profiling.nsight import SECTIONS, build_command
 
