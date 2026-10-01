@@ -15,11 +15,12 @@ would put Triton's compilation of candidate *i+1* in the middle of the
 measurement of candidate *i*.
 
 What this is not: a wrapper around ``@triton.autotune``. Triton's autotuner
-takes a hand-written config list, times each one once, keeps the winner in
-process memory and never checks that any of them is correct. KernelForge
-generates the space from hardware properties, filters it with stated reasons,
-gates on correctness, measures a distribution rather than a single sample,
-persists results for later comparison and caches the winner across processes.
+takes the config list its caller writes, ranks each by a median from
+``do_bench``, keeps the winner in process memory unless ``cache_results=True``,
+and never checks that any of them is correct. KernelForge generates the space
+from hardware properties, filters it with stated reasons, gates on correctness,
+records each candidate's latency statistics for later comparison and caches
+the winner per board across processes.
 Triton's autotuner is available as a *baseline* so the difference is a
 measurement rather than a claim -- see ``triton_autotune`` in
 ``kernelforge/kernels/matmul.py``.

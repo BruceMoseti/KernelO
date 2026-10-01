@@ -129,8 +129,8 @@ reporting which it used.
 `matmul_triton_autotune`, using the same kernel. If KernelForge were a wrapper
 around it there would be no project, and the honest way to say so is to measure
 both. The differences are in candidate generation from hardware properties,
-the correctness gate, a distribution instead of a single sample, cross-process
-persistence, and a recorded history — not in the kernel.
+the correctness gate, recorded latency statistics with their provenance, and
+a cache keyed on the board rather than the architecture — not in the kernel.
 
 ## What the CPU-only verification can and cannot see
 

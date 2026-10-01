@@ -24,14 +24,19 @@ The standard answer is `@triton.autotune` over a hand-written candidate list.
 It works, and I kept it as a measured baseline rather than dismissing it. But it
 leaves out everything that makes a tuning result *trustworthy*:
 
-1. The candidate list is hand-written, so it neither adapts to the device nor
-   explains why a configuration is absent.
+1. The candidate list is whatever the caller writes. Pruning hooks
+   (`prune_configs_by`) can drop configurations, but nothing records why one is
+   absent.
 2. Candidates are never checked for correctness. Skipping work is fast, and a
    kernel with a broken boundary mask is precisely a kernel that skips work.
-3. Each candidate is timed once, so the ranking inherits single-sample variance.
-4. The winner lives in process memory and dies with the process.
-5. Nothing is recorded, so last month's numbers cannot be compared with today's,
-   and cannot be known to be incomparable either.
+3. Each candidate's timing is reduced to a median and two quantiles from
+   `do_bench`, used for the ranking and, by default, then discarded.
+4. By default the winner lives in process memory and dies with the process.
+   `cache_results=True` persists the timings, keyed by Triton version, target
+   architecture and kernel source, but not by board.
+5. A cache is not a record: it keeps the latest timings per key, with no GPU,
+   driver or library versions beside them, so last month's numbers cannot be
+   compared with today's, and cannot be known to be incomparable either.
 
 KernelForge addresses those five points. It is not a faster kernel library; it
 is the infrastructure that decides *which* kernel to run and proves the answer
@@ -598,11 +603,12 @@ parameter turns the table into a sparse matrix every query must special-case. A
 content digest gives configs a stable identity for joins; `json_extract` recovers
 single-parameter predicates where needed.
 
-**14. How is this different from `@triton.autotune`?** Triton's autotuner takes a
-hand-written config list, times each once, keeps the winner in process memory and
-never checks correctness. KernelForge derives the space from hardware properties
-with stated rejection reasons, gates on correctness, measures a distribution,
-persists results with provenance, and caches across processes. I kept Triton's
+**14. How is this different from `@triton.autotune`?** Triton's autotuner takes
+the config list its caller writes, ranks each by a median from `do_bench`, keeps
+the winner in process memory unless `cache_results=True`, and never checks
+correctness. KernelForge derives the space from hardware properties with stated
+rejection reasons, gates on correctness, records each candidate's latency
+statistics with provenance, and caches winners per board. I kept Triton's
 autotuner as a *measured baseline* rather than asserting the difference.
 
 **15. What is the biggest weakness of this project?** No measured numbers, and
