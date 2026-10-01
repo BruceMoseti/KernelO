@@ -10,6 +10,7 @@ from kernelforge.tuning.search import (
     DeviceLimits,
     Rule,
     SearchSpace,
+    matmul_shared_memory_bound,
 )
 
 # SM counts and opt-in shared memory per block from NVIDIA's published specifications.
@@ -78,11 +79,9 @@ def test_survivors_respect_hardware_and_problem_limits(
     problem = _problem(*shape, dtype)
     candidates = MATMUL_SEARCH_SPACE.candidates(problem, device)
     assert candidates.configs, "pruning must never remove every candidate"
-    itemsize = torch.finfo(dtype).bits // 8
     for config in candidates.configs:
         block_m, block_n, block_k = (config.params[p] for p in ("BLOCK_M", "BLOCK_N", "BLOCK_K"))
-        shared = (block_m + block_n) * block_k * itemsize * config.num_stages
-        assert shared <= device.max_shared_memory_bytes
+        assert matmul_shared_memory_bound(config, dtype) <= device.max_shared_memory_bytes
         accumulators = block_m * block_n / (32 * config.num_warps)
         assert MMA_FRAGMENT_PER_THREAD <= accumulators <= MAX_ACCUMULATORS_PER_THREAD
         for block, size in zip((block_m, block_n, block_k), shape, strict=True):
