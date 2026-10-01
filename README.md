@@ -518,6 +518,7 @@ tests/                       482 tests; compile_harness.py + cuda_compile_harnes
                              lower kernels to PTX with no GPU
 docs/                        BENCHMARKING.md (methodology), CASE_STUDIES.md
 scripts/run_experiments.sh   full reproduction from a clean database
+scripts/gpu_validate.sh      every GPU check and one tuning run, without a CI runner
 .github/workflows/           ci.yml (CPU) · gpu-validation.yml (self-hosted GPU)
 ```
 

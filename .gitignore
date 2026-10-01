@@ -13,6 +13,7 @@ venv/
 # another's.
 results/*.db
 results/*.csv
+results/*/
 reports/
 *.ncu-rep
 *.json.gz
