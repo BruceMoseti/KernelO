@@ -84,8 +84,9 @@ kernelforge profile matmul --m 4096 --n 4096 --k 4096 --backend nsight \
 
 ### Results
 
-Results table to be filled from `results/matmul_fp16.csv` and the `ncu` output, one
-row per tile at `4096³` and one per tile at `256²`, with columns: median
+Results table to be filled from the candidate rows in `results/kernelforge.db`
+and the `ncu` output, one row per tile at `4096³` and one per tile at `256²`,
+with columns: median
 latency, TFLOP/s, achieved occupancy, SM and DRAM throughput as a percentage of
 peak, registers per thread, and shared memory per block.
 
