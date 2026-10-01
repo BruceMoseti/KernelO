@@ -74,16 +74,17 @@ def test_budget_is_honoured_when_tightened(a100_caps):
 def test_shared_memory_filter_is_device_specific(a100_caps, rtx4090_caps):
     """The same tile is feasible on an A100 and not on an RTX 4090.
 
-    128x128 tiles with BLOCK_K=64 over four pipeline stages need 128 KiB of
-    shared memory, which fits in the A100's 163 KiB opt-in budget but not the
-    4090's 99 KiB. This is the concrete reason the cache key carries the board
-    name.
+    An fp32 128x128 tile with BLOCK_K=64 over three pipeline stages keeps two
+    operand tiles in flight on both cards: 128 KiB of shared memory, which fits
+    in the A100's 163 KiB opt-in budget but not the 4090's 99 KiB. This is the
+    concrete reason the cache key carries the board name.
     """
-    config = gemm_config(BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=4)
+    fp32_problem = Problem.create("matmul", "fp32", M=2048, N=4096, K=4096)
+    config = gemm_config(BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=3)
     space = MatmulSearchSpace()
-    assert space.shared_memory_bytes(config, GEMM) == 4 * 64 * 256 * 2
-    assert space.reject_reason(config, GEMM, a100_caps) is None
-    reason = space.reject_reason(config, GEMM, rtx4090_caps)
+    assert space.shared_memory_bytes(config, fp32_problem, a100_caps) == 2 * 64 * 256 * 4
+    assert space.reject_reason(config, fp32_problem, a100_caps) is None
+    reason = space.reject_reason(config, fp32_problem, rtx4090_caps)
     assert reason is not None and "shared memory" in reason
 
 

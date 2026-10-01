@@ -15,10 +15,10 @@ A Triton or CUDA kernel's performance is dominated by a handful of integer
 execution parameters: the output tile shape (`BLOCK_M`, `BLOCK_N`), the
 reduction block (`BLOCK_K`), the thread count (`num_warps`), and the software
 pipeline depth (`num_stages`). The best values depend on *both* the problem
-shape and the specific GPU, and the dependency is not weak — a 128×128 tile
-over four pipeline stages needs 128 KiB of shared memory, which fits an A100's
-163 KiB opt-in budget and does not fit an RTX 4090's 99 KiB. There is no
-defensible default.
+shape and the specific GPU, and the dependency is not weak — an fp32 128×128
+tile with `BLOCK_K=64` over three pipeline stages needs 128 KiB of shared
+memory, which fits an A100's 163 KiB opt-in budget and does not fit an RTX
+4090's 99 KiB. There is no defensible default.
 
 The standard answer is `@triton.autotune` over a hand-written candidate list.
 It works, and I kept it as a measured baseline rather than dismissing it. But it
@@ -158,10 +158,10 @@ the TTGIR:
 A single-buffer `local_alloc` inside `scf.for`, and no `async_copy` — the
 software pipeliner had not run at all. I tried supplying full pointer
 divisibility hints (`tt.divisibility: 16`) on every pointer and stride argument;
-no change. So the standalone compile entry point does not pipeline, which means
-the CPU test **cannot** check the `num_stages` factor.
+no change. I concluded that the standalone compile entry point does not
+pipeline, which would mean the CPU test **cannot** check the `num_stages` factor.
 
-I corrected the claim rather than the test: the CPU test now checks the
+I corrected the claim rather than the test: the CPU test then checked the
 single-buffer tile footprint against the compiler's own figure (within a
 factor-of-two band, because the operand layout is padded for swizzling).
 
@@ -180,6 +180,16 @@ I had written a claim my test did not support. Finding it required being
 suspicious of a result that *looked* fine — the model predicted a 4x spread and
 the compiler reported none, and the temptation was to treat that as a
 measurement artefact rather than read the IR.
+
+A later audit found what the hints had missed. The JIT does not only mark a
+unit stride divisible by 16; it compiles it in as the constant 1, and that is
+what lets the pipeliner prove the operand loads contiguous. With each launch
+specialized the way the JIT does it (`specialize` in `tests/compile_harness.py`),
+the standalone compiler pipelines the K loop with `cp.async` and the allocation
+grows by one operand tile per stage — `num_stages - 1` tiles on sm_8x and
+`num_stages` on Hopper's wgmma path. The model now counts tiles per
+architecture, and the CPU tests check it against the compiler for sm80, sm89,
+sm90 and sm120.
 
 ---
 
@@ -546,16 +556,19 @@ PTX and cubin for a named target with no driver. That catches undefined names,
 illegal tile shapes and bad `tl.*` calls, and the PTX is inspectable, so I assert
 tensor-core MMA selection and exact per-element instruction counts. `clang++` in
 CUDA mode does the same for the CUDA kernel given headers and libdevice from
-PyPI. Know the limit: the standalone entry point does not run the software
-pipeliner, so shared-memory multi-buffering must be checked on a device.
+PyPI. Know the condition: the software pipeliner only runs when the kernel is
+specialized the way the JIT specializes a launch, unit strides compiled in as
+constants included, so the harness specializes each GEMM exactly that way.
 
 **8. What is the shared-memory model, and how do you know it is right?**
-`num_stages × BLOCK_K × (BLOCK_M + BLOCK_N) × itemsize`, because the pipeliner
-keeps `num_stages` operand tiles in flight. It is an upper bound used to reject
-configurations before compiling; anything it lets through that the compiler then
-rejects returns as `OutOfResources` and is recorded as a compile failure, so an
-inaccurate model costs tuning time rather than correctness. The tile half is
-checked against the compiler on CPU; the `num_stages` factor against a real
+The operand tiles the pipeliner keeps in flight, `BLOCK_K × (BLOCK_M + BLOCK_N) ×
+itemsize` each — `num_stages - 1` of them on sm_8x and sm_12x, `num_stages` on
+Hopper's wgmma path — or the output tile the epilogue stages, whichever is
+larger. It is an upper bound used to reject configurations before compiling;
+anything it lets through that the compiler then rejects returns as
+`OutOfResources` and is recorded as a compile failure, so an inaccurate model
+costs tuning time rather than correctness. It is checked against the compiler on
+CPU at every pipeline depth for sm80, sm89, sm90 and sm120, and against a real
 launch on GPU.
 
 **9. Why do you rank on the median rather than the minimum or mean?** The

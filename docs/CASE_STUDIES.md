@@ -40,10 +40,13 @@ the reuse of the smallest means a quarter of the global traffic for the same
 arithmetic. So latency should fall as the tile grows — until one of three
 things stops it:
 
-1. **Shared memory.** `num_stages * BLOCK_K * (BM + BN) * itemsize`. At 128×128,
-   `BLOCK_K=64`, four stages, fp16, that is 128 KiB — within an A100's 163 KiB
-   opt-in budget and beyond an RTX 4090's 99 KiB. On a 4090 the search space
-   rejects it before compiling.
+1. **Shared memory.** The pipeline keeps `BLOCK_K * (BM + BN) * itemsize`
+   operand tiles in flight: `num_stages - 1` of them on Ampere and Ada,
+   `num_stages` on Hopper's wgmma path. At 128×128, `BLOCK_K=64`, four stages,
+   fp16, that is 96 KiB on an A100 or an RTX 4090 and 128 KiB on an H100 —
+   within all three opt-in budgets. In fp32 the same tile over three stages
+   needs 128 KiB on Ampere and Ada: within an A100's 163 KiB, beyond an RTX
+   4090's 99 KiB, so on a 4090 the search space rejects it before compiling.
 2. **Registers.** The fp32 accumulator is `BM*BN/threads` values per thread: 64
    at 128×128 with 8 warps, 256 with 2 warps. The architecture gives a thread
    255 addressable registers, so the latter spills to local memory.
