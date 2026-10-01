@@ -41,6 +41,10 @@ SECTIONS: dict[str, str] = {
 
 DEFAULT_SECTIONS = ("launch", "occupancy", "throughput", "memory", "stalls")
 
+#: Bytes read from and written to DRAM, summed over a run's launches so that a
+#: fused kernel and the several kernels of an unfused sequence compare directly.
+DRAM_METRICS = ("dram__bytes_read.sum", "dram__bytes_write.sum")
+
 
 def ncu_available() -> bool:
     return shutil.which("ncu") is not None
@@ -59,6 +63,11 @@ class NsightRun:
     def ok(self) -> bool:
         return self.returncode == 0
 
+    def total(self, metric: str) -> float | None:
+        """``metric`` summed over the profiled launches, in its base unit."""
+        values = [launch[metric].split()[0] for launch in self.metrics.values() if metric in launch]
+        return sum(float(value.replace(",", "")) for value in values) if values else None
+
     def render(self) -> str:
         lines = [f"$ {' '.join(self.command)}"]
         if not self.ok:
@@ -71,6 +80,12 @@ class NsightRun:
                 lines.append(f"\n{kernel}")
                 width = max(len(k) for k in values)
                 lines.extend(f"  {k:<{width}}  {v}" for k, v in values.items())
+            read, written = (self.total(metric) for metric in DRAM_METRICS)
+            if read is not None and written is not None:
+                lines.append(
+                    f"\nDRAM over {len(self.metrics)} launch(es): {read / 2**20:.1f} MiB read, "
+                    f"{written / 2**20:.1f} MiB written"
+                )
         else:
             lines.append(self.stdout.strip())
         if self.report_path is not None:
@@ -82,13 +97,20 @@ def build_command(
     target: list[str],
     *,
     sections: tuple[str, ...] = DEFAULT_SECTIONS,
+    metrics: tuple[str, ...] = (),
     kernel_filter: str | None = None,
-    launch_count: int = 1,
+    profile_from_start: bool = True,
+    launch_count: int | None = 1,
     launch_skip: int = 0,
     report_path: str | Path | None = None,
     csv: bool = True,
 ) -> list[str]:
-    """Assemble the ``ncu`` command line that profiles ``target``."""
+    """Assemble the ``ncu`` command line that profiles ``target``.
+
+    With ``profile_from_start=False``, ncu profiles only the launches between
+    the target's ``cudaProfilerStart`` and ``cudaProfilerStop``. A
+    ``launch_count`` of None profiles every launch that is selected.
+    """
     unknown = sorted(set(sections) - set(SECTIONS))
     if unknown:
         raise ValueError(f"unknown sections {unknown}; available: {sorted(SECTIONS)}")
@@ -96,9 +118,15 @@ def build_command(
     command = ["ncu", "--target-processes", "all"]
     for name in sections:
         command += ["--section", SECTIONS[name]]
+    if metrics:
+        command += ["--metrics", ",".join(metrics)]
     if kernel_filter:
         command += ["--kernel-name", kernel_filter]
-    command += ["--launch-count", str(launch_count), "--launch-skip", str(launch_skip)]
+    if not profile_from_start:
+        command += ["--profile-from-start", "off"]
+    if launch_count is not None:
+        command += ["--launch-count", str(launch_count)]
+    command += ["--launch-skip", str(launch_skip)]
     if report_path is not None:
         command += ["--export", str(report_path), "--force-overwrite"]
     if csv:
@@ -111,39 +139,50 @@ def self_command(argv: list[str]) -> list[str]:
     return [sys.executable, "-m", "kernelforge.cli.main", *argv]
 
 
-def _parse_csv(stdout: str) -> dict[str, dict[str, str]]:
-    """Parse ``ncu --csv --page raw`` into {kernel: {metric: value}}.
+#: The per-launch columns that precede the metrics on the raw page.
+_LAUNCH_COLUMNS = frozenset(
+    {
+        "ID",
+        "Process ID",
+        "Process Name",
+        "Host Name",
+        "Kernel Name",
+        "Kernel Time",
+        "Context",
+        "Stream",
+    }
+)
 
-    Best effort by design: the raw page's columns are stable enough to key on
-    by name, but if a future version renames them the caller still has the raw
-    text, so a parse failure must not lose the measurement.
+
+def _parse_csv(stdout: str) -> dict[str, dict[str, str]]:
+    """Parse ``ncu --csv --page raw`` into {launch: {metric: value}}.
+
+    The raw page is a header row naming the launch columns and then every
+    collected metric, a row of units, and one row per profiled launch. ncu
+    writes its own ``==PROF==`` lines to the same stream. A launch is keyed by
+    its ID as well as its kernel's name, because one kernel can run twice.
+
+    Best effort by design: if a future version changes the layout, the caller
+    still has the raw text, so a parse failure must not lose the measurement.
     """
     import csv
-    import io
 
-    try:
-        rows = list(csv.DictReader(io.StringIO(stdout)))
-    except csv.Error:
+    lines = [line for line in stdout.splitlines() if line and not line.startswith("==")]
+    start = next((i for i, line in enumerate(lines) if line.startswith('"ID",')), None)
+    if start is None:
         return {}
-    if not rows:
-        return {}
-
-    def column(candidates: tuple[str, ...]) -> str | None:
-        return next((c for c in candidates if c in rows[0]), None)
-
-    kernel_column = column(("Kernel Name", "Kernel"))
-    name_column = column(("Metric Name",))
-    value_column = column(("Metric Value",))
-    if not (kernel_column and name_column and value_column):
-        return {}
-
     out: dict[str, dict[str, str]] = {}
-    for row in rows:
-        kernel = (row.get(kernel_column) or "unknown").strip()
-        unit = (row.get("Metric Unit") or "").strip()
-        value = (row.get(value_column) or "").strip()
-        label = f"{value} {unit}".strip()
-        out.setdefault(kernel, {})[(row.get(name_column) or "").strip()] = label
+    try:
+        header, units, *launches = csv.reader(lines[start:])
+        for launch in launches:
+            fields = dict(zip(header, launch, strict=True))
+            out[f"{fields['ID']}: {fields['Kernel Name']}"] = {
+                column: f"{value} {unit}".strip()
+                for column, unit, value in zip(header, units, launch, strict=True)
+                if column not in _LAUNCH_COLUMNS
+            }
+    except (csv.Error, KeyError, ValueError):
+        return {}
     return out
 
 
@@ -151,8 +190,10 @@ def run(
     target: list[str],
     *,
     sections: tuple[str, ...] = DEFAULT_SECTIONS,
+    metrics: tuple[str, ...] = (),
     kernel_filter: str | None = None,
-    launch_count: int = 1,
+    profile_from_start: bool = True,
+    launch_count: int | None = 1,
     launch_skip: int = 0,
     report_path: str | Path | None = None,
     timeout: float = 900.0,
@@ -165,7 +206,9 @@ def run(
     command = build_command(
         target,
         sections=sections,
+        metrics=metrics,
         kernel_filter=kernel_filter,
+        profile_from_start=profile_from_start,
         launch_count=launch_count,
         launch_skip=launch_skip,
         report_path=report_path,

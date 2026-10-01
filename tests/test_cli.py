@@ -176,6 +176,67 @@ def test_nsight_sections_are_validated():
         build_command(["python"], sections=("not_a_section",))
 
 
+#: ``ncu --page raw --csv`` output as NVIDIA's Nsight Compute forum moderator
+#: posted it (forums.developer.nvidia.com/t/220320), behind the ``==PROF==``
+#: lines that the Nsight Compute CLI documentation shows on the same stream.
+NCU_RAW_CSV = """\
+==PROF== Connected to process 5268
+==PROF== Profiling "vectorAdd_A" - 0: 0%....50%....100% - 46 passes
+==PROF== Disconnected from process 5268
+"ID","Process ID","Process Name","Host Name","Kernel Name","Kernel Time","Context","Stream","launch__grid_size","sm__warps_active.avg.pct_of_peak_sustained_active"
+"","","","","","","","","","%"
+"0","12440","vectorAdd.exe","127.0.0.1","vectorAdd(const float *, const float *, float *, int)","2021-Nov-08 19:56:53","1","7","196","77.969567"
+"""
+
+
+def ncu_printing(monkeypatch, stdout: str):
+    import subprocess
+
+    from kernelforge.profiling import nsight
+
+    monkeypatch.setattr(nsight, "ncu_available", lambda: True)
+    monkeypatch.setattr(
+        nsight.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout, ""),
+    )
+    return nsight.run(["./vectorAdd"])
+
+
+def test_nsight_reads_the_raw_page_csv(monkeypatch):
+    run = ncu_printing(monkeypatch, NCU_RAW_CSV)
+    assert run.metrics == {
+        "0: vectorAdd(const float *, const float *, float *, int)": {
+            "launch__grid_size": "196",
+            "sm__warps_active.avg.pct_of_peak_sustained_active": "77.969567 %",
+        }
+    }
+
+
+def test_nsight_keeps_each_launch_of_a_kernel(monkeypatch):
+    second_launch = NCU_RAW_CSV.splitlines()[-1].replace('"0"', '"1"', 1)
+    run = ncu_printing(monkeypatch, NCU_RAW_CSV + second_launch + "\n")
+    assert list(run.metrics) == [
+        "0: vectorAdd(const float *, const float *, float *, int)",
+        "1: vectorAdd(const float *, const float *, float *, int)",
+    ]
+
+
+@pytest.mark.gpu
+def test_nsight_reads_the_csv_a_real_ncu_prints():
+    """The fixtures above follow NVIDIA's published example; this checks a real ncu."""
+    import sys
+
+    from kernelforge.profiling import nsight
+
+    if not nsight.ncu_available():
+        pytest.skip("Nsight Compute (ncu) is not on PATH")
+    script = "import torch; torch.ones(8, device='cuda').add_(1); torch.cuda.synchronize()"
+    run = nsight.run([sys.executable, "-c", script], sections=("launch",))
+    assert run.ok, run.stderr
+    assert run.metrics, run.stdout
+
+
 def test_profile_reports_a_missing_ncu(capsys, monkeypatch):
     from kernelforge.profiling import nsight
 
@@ -186,32 +247,17 @@ def test_profile_reports_a_missing_ncu(capsys, monkeypatch):
     assert "ncu not found" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(
-    "operation,kernel",
-    [
-        ("matmul", "matmul_kernel"),
-        ("fused_linear", "fused_linear_gelu_kernel"),
-        ("rmsnorm", "rmsnorm_kernel"),
-        ("softmax", "softmax_kernel"),
-        ("vector_add", "vector_add_kernel"),
-    ],
-)
-def test_nsight_profiles_the_kernelforge_kernel(operation, kernel, monkeypatch):
-    """``--launch-count 1`` has to select the KernelForge launch.
+@pytest.mark.parametrize("impl", ["kernelforge", "torch_eager"])
+def test_nsight_profiles_every_kernel_of_one_call(impl, monkeypatch):
+    """ncu profiles only inside the child's profiler range, and all of it.
 
-    The profiled process builds its inputs with ``torch.randn`` before it
-    launches the kernel, and ncu counts only the launches that match its kernel
-    filter. With no filter, the counters printed were the RNG kernel's.
+    The range opens after the inputs exist, so ``torch.randn`` is outside it,
+    and it holds every kernel one call launches: the fused kernel alone, or
+    the unfused sequence's GEMM, bias add and GELU together.
     """
-    import importlib
     import subprocess
 
     from kernelforge.profiling import nsight
-
-    pytest.importorskip("triton")
-    # Triton names the compiled kernel after the decorated function.
-    module = importlib.import_module(f"kernelforge.kernels.{operation}")
-    assert getattr(module, kernel).fn.__name__ == kernel
 
     commands = []
 
@@ -221,12 +267,72 @@ def test_nsight_profiles_the_kernelforge_kernel(operation, kernel, monkeypatch):
 
     monkeypatch.setattr(nsight, "ncu_available", lambda: True)
     monkeypatch.setattr(nsight.subprocess, "run", fake_run)
-    assert main(["profile", operation, "--backend", "nsight", "--no-cache"]) == 0
+    argv = ["profile", "fused_linear", "--backend", "nsight", "--impl", impl, "--no-cache"]
+    assert main(argv) == 0
 
     (command,) = commands
-    assert "--kernel-name" in command
-    assert command[command.index("--kernel-name") + 1] == kernel
-    assert command[command.index("--launch-count") + 1] == "1"
+    assert command[command.index("--profile-from-start") + 1] == "off"
+    assert "--launch-count" not in command
+    assert command[command.index("--metrics") + 1] == "dram__bytes_read.sum,dram__bytes_write.sum"
+    child = command[command.index("kernelforge.cli.main") + 1 :]
+    assert child[child.index("--impl") + 1] == impl
+
+
+@pytest.mark.parametrize("impl", ["kernelforge", "torch_eager"])
+def test_profiled_child_runs_one_warmed_call_inside_the_range(impl, monkeypatch, tmp_path):
+    """Inputs first, then one call to compile and initialise, then one call profiled."""
+    import contextlib
+
+    import kernelforge.kernels
+    import kernelforge.runtime.env
+    from kernelforge.tuning.config import KernelConfig
+
+    events = []
+
+    class Recorder:
+        def make_inputs(self, problem, device, *, seed=0):
+            events.append("inputs")
+            return ()
+
+        def default_config(self, problem):
+            return KernelConfig("vector_add", BLOCK_SIZE=1024, num_warps=4)
+
+        def run(self, config, *inputs):
+            events.append("kernelforge")
+
+        def baselines(self, problem, inputs):
+            return {"torch_eager": lambda: events.append("torch_eager")}
+
+    @contextlib.contextmanager
+    def profiled_range():
+        events.append("start")
+        yield
+        events.append("stop")
+
+    monkeypatch.setattr(kernelforge.kernels, "get_operator", lambda name: Recorder())
+    monkeypatch.setattr(kernelforge.runtime.env, "require_cuda", lambda: torch.device("cpu"))
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *args: None)
+    monkeypatch.setattr(torch.cuda.profiler, "profile", profiled_range)
+    argv = ["profile", "vector_add", "--backend", "launch-once", "--impl", impl]
+    assert main([*argv, "--cache", str(tmp_path / "configs.json")]) == 0
+    assert events == ["inputs", impl, "start", impl, "stop"]
+
+
+def test_nsight_totals_dram_traffic_over_every_launch(monkeypatch):
+    header = (
+        '"ID","Process ID","Process Name","Host Name","Kernel Name","Kernel Time",'
+        '"Context","Stream","dram__bytes_read.sum","dram__bytes_write.sum"'
+    )
+    units = '"","","","","","","","","byte","byte"'
+    launches = [
+        f'"{i}","4242","python3","127.0.0.1","{name}","2026-Oct-01 05:00:00","1","7",'
+        f'"{read}","{written}"'
+        for i, (name, read, written) in enumerate(
+            [("gemm", 3 * 2**20, 2**20), ("add", 2**20, 2**20), ("gelu", 2**20, 2**20)]
+        )
+    ]
+    run = ncu_printing(monkeypatch, "\n".join([header, units, *launches]) + "\n")
+    assert "DRAM over 3 launch(es): 5.0 MiB read, 3.0 MiB written" in run.render()
 
 
 @pytest.mark.gpu
@@ -302,3 +408,26 @@ def test_nsight_counters_come_from_the_kernelforge_kernel(monkeypatch):
     assert main(["profile", "matmul", *shape, "--backend", "nsight", "--no-cache"]) == 0
     (run,) = runs
     assert "matmul_kernel" in run.stdout
+
+
+@pytest.mark.gpu
+def test_nsight_profiles_every_kernel_of_the_unfused_sequence(monkeypatch):
+    from kernelforge.profiling import nsight
+
+    if not nsight.ncu_available():
+        pytest.skip("Nsight Compute (ncu) is not on PATH")
+    runs = []
+    real_run = nsight.run
+
+    def recording_run(*args, **kwargs):
+        runs.append(real_run(*args, **kwargs))
+        return runs[-1]
+
+    monkeypatch.setattr(nsight, "run", recording_run)
+    shape = ["-m", "256", "-n", "256", "-k", "256"]
+    argv = ["profile", "fused_linear", *shape, "--backend", "nsight", "--impl", "torch_eager"]
+    assert main([*argv, "--no-cache"]) == 0
+    (run,) = runs
+    # The GEMM, the bias add and the GELU, at least.
+    assert len(run.metrics) >= 3, run.stdout
+    assert "DRAM over" in run.render()
