@@ -84,8 +84,9 @@ kernelforge profile matmul --m 4096 --n 4096 --k 4096 --backend nsight \
 
 ### Results
 
-Results table to be filled from `results/matmul_fp16.csv` and the `ncu` output, one
-row per tile at `4096³` and one per tile at `256²`, with columns: median
+Results table to be filled from the candidate rows in `results/kernelforge.db`
+and the `ncu` output, one row per tile at `4096³` and one per tile at `256²`,
+with columns: median
 latency, TFLOP/s, achieved occupancy, SM and DRAM throughput as a percentage of
 peak, registers per thread, and shared memory per block.
 
@@ -146,9 +147,11 @@ done
 kernelforge report
 ```
 
-The per-operator CSV export carries `cfg_num_warps` alongside the latency for
-every candidate, so the comparison at fixed tile is a filter on the export
-rather than a separate experiment.
+The CSV export keeps only the fastest row per implementation, so it holds one
+KernelForge row per shape. Every candidate `tune` measured is a row in
+`results/kernelforge.db` instead, with its configuration in `params_json`
+(`ResultsDB().rows(operation="matmul")` returns them), so the comparison at
+fixed tile is a filter on those rows rather than a separate experiment.
 
 ### Counters that decide it
 
@@ -165,9 +168,9 @@ kernelforge profile matmul --m 1 --n 11008 --k 4096 --backend nsight \
 
 ### Results
 
-Results table to be filled from the `cfg_num_warps` column of
-`results/matmul_fp16.csv` at fixed tile, one row per (shape, `num_warps`) pair, with
-the dominant warp stall reason from `WarpStateStats` alongside.
+Results table to be filled from those database rows at fixed tile, one row per
+(shape, `num_warps`) pair, with the dominant warp stall reason from
+`WarpStateStats` alongside.
 
 **Which prediction held, and which did not:** to be written from the
 measurements, stating explicitly where the outcome differed from the prediction
