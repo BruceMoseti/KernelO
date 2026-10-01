@@ -115,13 +115,15 @@ def fused_linear_gelu(
     bias: torch.Tensor,
     *,
     config: KernelConfig | None = None,
+    out: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """``gelu(x @ w + bias)`` in one kernel.
 
     ``w`` is ``(K, N)``, matching ``torch.matmul``. An ``nn.Linear`` holds its
     weight as ``(out_features, in_features)``, so callers pass ``weight.t()``;
     the kernel takes strides rather than assuming contiguity, so the
-    transposed view needs no copy.
+    transposed view needs no copy. The same holds for ``out``, which receives
+    the result when given.
     """
     if x.ndim != 2 or w.ndim != 2:
         raise ValueError(f"expected 2D x and w, got {tuple(x.shape)} and {tuple(w.shape)}")
@@ -135,7 +137,12 @@ def fused_linear_gelu(
     cfg = config or DEFAULT_CONFIG
     m, k = x.shape
     _, n = w.shape
-    y = torch.empty((m, n), device=x.device, dtype=x.dtype)
+    if out is None:
+        y = torch.empty((m, n), device=x.device, dtype=x.dtype)
+    elif out.shape != (m, n) or out.dtype != x.dtype:
+        raise ValueError(f"out must be ({m}, {n}) {x.dtype}, got {tuple(out.shape)} {out.dtype}")
+    else:
+        y = out
     grid = (triton.cdiv(m, cfg["BLOCK_M"]) * triton.cdiv(n, cfg["BLOCK_N"]),)
     fused_linear_gelu_kernel[grid](
         x,

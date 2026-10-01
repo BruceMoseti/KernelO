@@ -180,6 +180,56 @@ def test_transposed_weight_needs_no_copy(device):
     assert_verified(expected, fused_linear_gelu(x, view, bias), dtype=torch.float16)
 
 
+#: Cells of padding on every side of a guarded tensor: at least the largest
+#: block size, so a whole-tile overrun lands in the padding rather than past it.
+GUARD = 128
+#: Exactly representable in every dtype, and not a value a stray store could
+#: write: anything computed from a NaN-padded operand is NaN.
+OUT_SENTINEL = -1024.0
+
+
+def guarded(rows, cols, dtype, device, fill):
+    """A ``rows x cols`` view into a buffer padded with ``GUARD`` cells of ``fill``."""
+    buffer = torch.full((rows + 2 * GUARD, cols + 2 * GUARD), fill, device=device, dtype=dtype)
+    return buffer, buffer[GUARD : GUARD + rows, GUARD : GUARD + cols]
+
+
+@pytest.mark.parametrize("tile", [(32, 32, 32, 4, 3), (128, 128, 64, 8, 3)])
+@pytest.mark.parametrize("w_layout", ["row-major", "column-major"])
+@pytest.mark.parametrize("shape", [(1, 1, 1), (33, 47, 61), (70, 17, 129)])
+def test_no_access_outside_the_operands(shape, w_layout, tile, device):
+    """Operands sit inside NaN and the output inside a sentinel value.
+
+    A load past an operand's edge pulls NaN into the result, and a store past
+    the output's edge overwrites the sentinel. Without the padding, a stray
+    store lands outside the allocation, where no comparison can see it.
+    """
+    from kernelforge.kernels.fused_linear import fused_linear_gelu, linear_gelu_reference
+
+    m, n, k = shape
+    x_values, w_values, bias_values = inputs(m, k, n, torch.float16, device)
+    _, x = guarded(m, k, torch.float16, device, float("nan"))
+    if w_layout == "row-major":
+        _, w = guarded(k, n, torch.float16, device, float("nan"))
+    else:
+        w = guarded(n, k, torch.float16, device, float("nan"))[1].t()
+    bias = guarded(1, n, torch.float16, device, float("nan"))[1][0]
+    x.copy_(x_values)
+    w.copy_(w_values)
+    bias.copy_(bias_values)
+    out_buffer, out = guarded(m, n, torch.float16, device, OUT_SENTINEL)
+
+    fused_linear_gelu(x, w, bias, config=config(*tile), out=out)
+    assert_verified(
+        linear_gelu_reference(x_values.double(), w_values.double(), bias_values.double()),
+        out,
+        dtype=torch.float16,
+        context=f"fused_linear {m}x{n}x{k} tile={tile} {w_layout} w",
+    )
+    out.fill_(OUT_SENTINEL)
+    assert (out_buffer == OUT_SENTINEL).all(), "fused_linear_gelu wrote outside its output"
+
+
 def test_every_candidate_agrees_with_the_reference(device):
     from kernelforge.kernels.fused_linear import fused_linear_gelu, linear_gelu_reference
     from kernelforge.runtime.env import device_caps
@@ -243,3 +293,7 @@ def test_inputs_are_validated(device):
         fused_linear_gelu(x, torch.zeros(9, 16, device=device, dtype=torch.float16), bias)
     with pytest.raises(ValueError, match="dtype mismatch"):
         fused_linear_gelu(x, w.float(), bias)
+    with pytest.raises(ValueError, match="out must be"):
+        fused_linear_gelu(x, w, bias, out=torch.empty(4, 15, device=device, dtype=torch.float16))
+    with pytest.raises(ValueError, match="out must be"):
+        fused_linear_gelu(x, w, bias, out=torch.empty(4, 16, device=device, dtype=torch.float32))
