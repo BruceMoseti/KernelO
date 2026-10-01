@@ -111,39 +111,50 @@ def self_command(argv: list[str]) -> list[str]:
     return [sys.executable, "-m", "kernelforge.cli.main", *argv]
 
 
-def _parse_csv(stdout: str) -> dict[str, dict[str, str]]:
-    """Parse ``ncu --csv --page raw`` into {kernel: {metric: value}}.
+#: The per-launch columns that precede the metrics on the raw page.
+_LAUNCH_COLUMNS = frozenset(
+    {
+        "ID",
+        "Process ID",
+        "Process Name",
+        "Host Name",
+        "Kernel Name",
+        "Kernel Time",
+        "Context",
+        "Stream",
+    }
+)
 
-    Best effort by design: the raw page's columns are stable enough to key on
-    by name, but if a future version renames them the caller still has the raw
-    text, so a parse failure must not lose the measurement.
+
+def _parse_csv(stdout: str) -> dict[str, dict[str, str]]:
+    """Parse ``ncu --csv --page raw`` into {launch: {metric: value}}.
+
+    The raw page is a header row naming the launch columns and then every
+    collected metric, a row of units, and one row per profiled launch. ncu
+    writes its own ``==PROF==`` lines to the same stream. A launch is keyed by
+    its ID as well as its kernel's name, because one kernel can run twice.
+
+    Best effort by design: if a future version changes the layout, the caller
+    still has the raw text, so a parse failure must not lose the measurement.
     """
     import csv
-    import io
 
-    try:
-        rows = list(csv.DictReader(io.StringIO(stdout)))
-    except csv.Error:
+    lines = [line for line in stdout.splitlines() if line and not line.startswith("==")]
+    start = next((i for i, line in enumerate(lines) if line.startswith('"ID",')), None)
+    if start is None:
         return {}
-    if not rows:
-        return {}
-
-    def column(candidates: tuple[str, ...]) -> str | None:
-        return next((c for c in candidates if c in rows[0]), None)
-
-    kernel_column = column(("Kernel Name", "Kernel"))
-    name_column = column(("Metric Name",))
-    value_column = column(("Metric Value",))
-    if not (kernel_column and name_column and value_column):
-        return {}
-
     out: dict[str, dict[str, str]] = {}
-    for row in rows:
-        kernel = (row.get(kernel_column) or "unknown").strip()
-        unit = (row.get("Metric Unit") or "").strip()
-        value = (row.get(value_column) or "").strip()
-        label = f"{value} {unit}".strip()
-        out.setdefault(kernel, {})[(row.get(name_column) or "").strip()] = label
+    try:
+        header, units, *launches = csv.reader(lines[start:])
+        for launch in launches:
+            fields = dict(zip(header, launch, strict=True))
+            out[f"{fields['ID']}: {fields['Kernel Name']}"] = {
+                column: f"{value} {unit}".strip()
+                for column, unit, value in zip(header, units, launch, strict=True)
+                if column not in _LAUNCH_COLUMNS
+            }
+    except (csv.Error, KeyError, ValueError):
+        return {}
     return out
 
 
