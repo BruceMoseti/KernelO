@@ -159,7 +159,7 @@ def matmul(a: torch.Tensor, b: torch.Tensor, *, config: KernelConfig | None = No
 # The point of KernelForge is not to re-skin `@triton.autotune`, so the two are
 # measured against each other. This is the tutorial-style approach: a short
 # hand-written config list, no feasibility filtering, no correctness gate, and
-# a cache keyed only on M/N/K.
+# a cache keyed on M/N/K and the operand dtypes.
 _AUTOTUNE_CONFIGS = [
     triton.Config(
         {"BLOCK_M": bm, "BLOCK_N": bn, "BLOCK_K": bk, "GROUP_M": 8},
