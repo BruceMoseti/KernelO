@@ -27,6 +27,7 @@ measurement rather than a claim -- see ``triton_autotune`` in
 
 from __future__ import annotations
 
+import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -217,7 +218,10 @@ class Tuner:
             self.log(f"{len(passed)} / {len(candidates)} configurations passed correctness")
 
             self.log("Benchmarking...")
-            timed = [self._time_candidate(operator, o, inputs, resolved) for o in outcomes]
+            # Seeded shuffle: thermal drift over a long session becomes noise
+            # instead of a bias against whichever configurations sort last.
+            order = random.Random(self.seed).sample(outcomes, len(outcomes))
+            timed = [self._time_candidate(operator, o, inputs, resolved) for o in order]
 
             baselines = (
                 self._measure_baselines(operator, problem, inputs, reference, resolved)

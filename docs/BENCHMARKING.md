@@ -39,7 +39,7 @@ The harness (`kernelforge/benchmark/runner.py`) instead:
 
 1. Runs `warmup` iterations and synchronises. The first launch of a kernel pays
    for module loading and context setup; Triton's first call also compiles.
-2. For each of `iterations` measured runs, zeroes an L2-sized buffer, records a
+2. For each of `iterations` measured runs, zeroes the L2 flush buffer, records a
    start event, calls the function, records an end event.
 3. Synchronises **once**, after the whole loop, then reads the elapsed time of
    each event pair.
@@ -50,6 +50,16 @@ in-order, so the cache-flush kernel enqueued before `start_event` has completed
 by the time the event is recorded and is not inside the measured interval.
 
 Defaults: `warmup=25`, `iterations=200`. Both are CLI flags.
+
+### Host launch overhead
+
+A start event only brackets the kernel if the GPU is still busy with earlier
+work when the event is reached; otherwise the interval also covers the host
+enqueuing the call. The flushes keep the GPU behind the host. After enqueuing
+the last call, the harness asks whether its start event has already executed.
+If it has, the GPU waited on the host at some point, and a `RuntimeWarning`
+says that some samples may include host launch latency. Small problems, such as
+M=1 decode GEMMs, are the ones at risk.
 
 ### Cross-check
 
@@ -71,9 +81,11 @@ implementations — the fix is a larger problem, not more iterations.
 
 Re-running a kernel on the same tensors leaves the inputs resident in L2, and
 for a problem whose working set fits, the reported throughput is one the kernel
-would never reach in a model where the inputs are not already cached. An
-L2-sized buffer (from `DeviceCaps.l2_cache_bytes`) is zeroed before each timed
-iteration.
+would never reach in a model where the inputs are not already cached. A buffer
+of max(256 MiB, 2 × L2) bytes (L2 from `DeviceCaps.l2_cache_bytes`) is zeroed
+before each timed iteration. One L2's worth of writes does not reliably evict
+the inputs, because L2 replacement is not strict LRU, and 256 MiB matches
+`triton.testing.do_bench`.
 
 This makes small problems look slower than a naive harness reports, which is
 the point. `--no-flush-l2` disables it; `TimingResult.flushed_l2` records which
@@ -117,6 +129,9 @@ tail is worth knowing about even when it wins.
 - **One GPU.** Never compare a number from one card with a number from
   another. The database records the device per run so the mistake is at least
   detectable.
+- **Shuffled timing order.** The tuner times verified candidates in an order
+  shuffled with its `seed`. Thermal drift over a long session then becomes
+  noise instead of a bias against whichever configurations sort last.
 
 ### Precision
 

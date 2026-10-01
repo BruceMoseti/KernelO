@@ -282,6 +282,37 @@ def test_tuner_honours_the_candidate_budget():
     assert result.tested == 2
 
 
+def test_candidates_are_timed_in_a_seeded_shuffled_order():
+    """Thermal drift over a long session must not bias against the configs that sort last."""
+
+    class _Copies(_FakeSpace):
+        def grid(self, problem):
+            for copy in range(8):
+                yield KernelConfig(self.operation, COPY=copy, MODE=MODE_CORRECT_FAST)
+
+    class _CopiesOperator(_FakeOperator):
+        def search_space(self):
+            return _Copies()
+
+    def timing_order(seed):
+        operator = _CopiesOperator()
+        tuner = Tuner(
+            warmup=1,
+            iterations=2,
+            measure_baselines=False,
+            seed=seed,
+            timer=operator.synthetic_timer,
+        )
+        tuner.tune(operator, PROBLEM, device="cpu")
+        return [config["COPY"] for config in operator.timed]
+
+    order = timing_order(0)
+    assert sorted(order) == list(range(8))
+    # Priority order here is COPY=0..7, the order the budget keeps them in.
+    assert order != list(range(8))
+    assert timing_order(0) == order
+
+
 def test_device_caps_fall_back_without_cuda():
     """The filters need capabilities even when no device is attached."""
     caps = DeviceCaps(

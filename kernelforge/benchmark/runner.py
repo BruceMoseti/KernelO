@@ -13,17 +13,25 @@ Two methodological details that materially move GEMM numbers:
 
 * **L2 flush.** Re-running the same kernel on the same tensors leaves the
   inputs resident in L2, which inflates throughput for problems whose working
-  set fits. A buffer the size of L2 is zeroed before each timed iteration. The
-  zeroing is enqueued *before* ``start_event``, and the stream is in-order, so
-  it is not part of the measured interval.
+  set fits. A buffer of max(256 MiB, 2 x L2) is zeroed before each timed
+  iteration: L2 replacement is not strict LRU, so one L2's worth of writes
+  does not reliably evict the inputs, and 256 MiB is what Triton's
+  ``do_bench`` uses. The zeroing is enqueued *before* ``start_event``, and the
+  stream is in-order, so it is not part of the measured interval.
 * **Distribution, not mean.** A single mean hides bimodal behaviour from clock
   throttling and from the occasional preempted launch, so the full set of
   samples is summarised as median/p95/p99.
+
+The flushes also keep the GPU behind the host, so each start event is followed
+by its kernel rather than by the host's launch overhead. If the GPU has already
+reached the last start event when the host finishes enqueuing, it waited on the
+host at some point, and a ``RuntimeWarning`` says so.
 """
 
 from __future__ import annotations
 
 import time
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -38,6 +46,9 @@ DEFAULT_ITERATIONS = 200
 # Medians at or below this are reported but should not be compared between
 # implementations; the fix is a larger problem, not more iterations.
 TIMER_RESOLUTION_MS = 0.002
+
+#: Smallest L2 flush buffer, matching ``triton.testing.do_bench``.
+MIN_L2_FLUSH_BYTES = 256 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -117,7 +128,8 @@ def summarize(
 
 
 def _l2_flush_buffer(device: torch.device) -> torch.Tensor:
-    return torch.empty(device_caps(device).l2_cache_bytes, dtype=torch.int8, device=device)
+    size = max(MIN_L2_FLUSH_BYTES, 2 * device_caps(device).l2_cache_bytes)
+    return torch.empty(size, dtype=torch.int8, device=device)
 
 
 def benchmark(
@@ -179,7 +191,15 @@ def benchmark(
         fn()
         end[i].record()
 
+    gpu_caught_up = start[-1].query()
     torch.cuda.synchronize(cuda_device)
+    if gpu_caught_up:
+        warnings.warn(
+            "the GPU drained its queue during timing, so some samples may include host "
+            "launch latency rather than only GPU execution time",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     samples = [start[i].elapsed_time(end[i]) for i in range(iterations)]
     return summarize(
         samples,

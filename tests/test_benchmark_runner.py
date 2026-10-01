@@ -9,10 +9,14 @@ loop is correct rather than merely self-consistent.
 
 from __future__ import annotations
 
+import dataclasses
+import warnings
+
 import numpy as np
 import pytest
 import torch
 
+from kernelforge.benchmark import runner
 from kernelforge.benchmark.runner import (
     TIMER_RESOLUTION_MS,
     benchmark,
@@ -98,6 +102,14 @@ def test_benchmark_validates_its_arguments(warmup, iterations):
         benchmark(lambda: None, warmup=warmup, iterations=iterations, device="cpu")
 
 
+@pytest.mark.parametrize("l2_mib, flush_mib", [(40, 256), (72, 256), (160, 320)])
+def test_l2_flush_buffer_is_twice_l2_and_at_least_256_mib(monkeypatch, l2_mib, flush_mib):
+    """One L2's worth of writes does not reliably evict it: replacement is not strict LRU."""
+    caps = dataclasses.replace(runner.device_caps(), l2_cache_bytes=l2_mib * 2**20)
+    monkeypatch.setattr(runner, "device_caps", lambda device: caps)
+    assert runner._l2_flush_buffer(torch.device("cpu")).numel() == flush_mib * 2**20
+
+
 def test_timing_result_serialises_without_samples():
     result = benchmark(lambda: None, warmup=0, iterations=3, device="cpu")
     payload = result.as_dict()
@@ -113,6 +125,27 @@ def test_gpu_path_uses_cuda_events(device):
     assert result.timer == "cuda_event"
     assert result.flushed_l2 is True
     assert result.median_ms > 0
+
+
+@pytest.mark.gpu
+def test_warns_when_the_gpu_waits_on_the_host(device):
+    """A callable that synchronises leaves the GPU idle while the host launches."""
+    x = torch.zeros(1, device=device)
+
+    def synchronizing() -> None:
+        x.add_(1)
+        torch.cuda.synchronize()
+
+    with pytest.warns(RuntimeWarning, match="host launch latency"):
+        benchmark(synchronizing, warmup=1, iterations=5, device=device)
+
+
+@pytest.mark.gpu
+def test_a_gpu_bound_loop_does_not_warn(device):
+    a = torch.randn(2048, 2048, device=device, dtype=torch.float16)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        benchmark(lambda: a @ a, warmup=5, iterations=50, device=device)
 
 
 @pytest.mark.gpu
