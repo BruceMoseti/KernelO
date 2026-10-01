@@ -108,9 +108,11 @@ tail is worth knowing about even when it wins.
 - **Identical inputs.** Inputs are generated once per problem from a seeded
   `torch.Generator` and shared by every implementation.
 - **Identical precision.** See below.
-- **`torch.compile` is warmed outside the measurement.** Compilation is
-  triggered eagerly when the baseline is constructed, so Dynamo tracing and
-  Inductor codegen do not land on the first measured iteration.
+- **`torch.compile` is warmed outside the measurement.** Compilation happens
+  on the baseline's first call, the verification that precedes its timing, so
+  Dynamo tracing and Inductor codegen do not land on a measured iteration. A
+  compile failure there drops that one baseline, with its error in the log,
+  and the tuning run is still saved.
 - **Allocation is inside the timed region for everyone.** Each implementation
   allocates its own output, as `torch.matmul` does. Excluding allocation for
   the Triton kernels and not for PyTorch would be the unfair choice.

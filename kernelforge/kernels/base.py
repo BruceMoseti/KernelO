@@ -80,15 +80,16 @@ class Operator(ABC):
 def compiled_baseline(
     fn: Callable[..., torch.Tensor], inputs: tuple[torch.Tensor, ...], *, mode: str | None = None
 ) -> Callable[[], torch.Tensor]:
-    """Wrap ``fn`` in ``torch.compile`` and warm it up.
+    """Wrap ``fn`` in ``torch.compile``.
 
-    Compilation is triggered eagerly here so that the first measured iteration
-    is not dominated by Dynamo tracing and Inductor codegen.
+    Nothing is compiled until the first call. Callers verify a baseline's
+    output before timing it, so Dynamo tracing and Inductor codegen still land
+    outside the measurement, and a compile failure surfaces at that one
+    baseline instead of while every baseline is being built.
     """
     compiled = torch.compile(fn, mode=mode) if mode else torch.compile(fn)
 
     def run() -> torch.Tensor:
         return compiled(*inputs)
 
-    run()
     return run
