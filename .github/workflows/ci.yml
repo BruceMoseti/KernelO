@@ -111,17 +111,19 @@ jobs:
           pip install pytest-xdist
 
       # Triton's interpreter executes the kernels on CPU tensors, so their
-      # correctness suites run here. bf16 GEMMs and the largest shapes need a
-      # GPU and skip. A run in which the interpreter was not active would skip
-      # every kernel test for want of a device and still be green, so at least
-      # one test must have passed.
+      # correctness suites and the transformer-block tests run here.
+      # bf16 GEMMs, the largest shapes and anything that needs CUDA itself are
+      # marked gpu and skip. A run in which the interpreter was not active would
+      # skip every kernel test for want of a device and still be green, so at
+      # least one test must have passed.
       - name: Run the kernel suites under the interpreter
         env:
           TRITON_INTERPRET: "1"
         run: |
           set -o pipefail
           pytest tests/test_matmul.py tests/test_fused_linear.py tests/test_rmsnorm.py \
-                 tests/test_softmax.py tests/test_vector_add.py -n auto -q -rs 2>&1 | tee result.txt
+                 tests/test_softmax.py tests/test_vector_add.py tests/test_transformer.py \
+                 -n auto -q -rs 2>&1 | tee result.txt
           if ! grep -Eq "[0-9]+ passed" result.txt; then
             echo "::error::no kernel test ran; the interpreter was not active"
             exit 1
