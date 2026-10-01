@@ -32,6 +32,18 @@ from kernelforge.tuning.config import KernelConfig, Problem
 SCHEMA_VERSION = 1
 DEFAULT_DB_PATH = Path("results/kernelforge.db")
 
+#: What two rows must share to be compared: one GPU, and one CUDA, driver,
+#: PyTorch and Triton. Rows from different environments are reported side by
+#: side and never ranked against or divided into one another.
+ENVIRONMENT_FIELDS = (
+    ("GPU", "gpu_name"),
+    ("Compute capability", "gpu_arch"),
+    ("CUDA", "cuda_version"),
+    ("Driver", "driver_version"),
+    ("PyTorch", "torch_version"),
+    ("Triton", "triton_version"),
+)
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     run_id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -284,13 +296,14 @@ class ResultsDB:
         return [dict(row) for row in self._conn.execute(query, params)]
 
     def best_per_label(self, *, operation: str | None = None) -> list[dict]:
-        """Fastest correct measurement for each (problem, label) pair."""
+        """Fastest correct measurement for each (environment, problem, label)."""
         rows = self.rows(operation=operation)
-        best: dict[tuple[str, str, str, str], dict] = {}
+        best: dict[tuple, dict] = {}
         for row in rows:
             if row["median_us"] is None or row["correct"] == 0:
                 continue
-            key = (row["operation"], row["shape_key"], row["dtype"], row["label"])
+            environment = tuple(row[column] for _, column in ENVIRONMENT_FIELDS)
+            key = (environment, row["operation"], row["shape_key"], row["dtype"], row["label"])
             if key not in best or row["median_us"] < best[key]["median_us"]:
                 best[key] = row
         return sorted(
