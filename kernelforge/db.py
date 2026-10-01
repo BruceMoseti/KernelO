@@ -11,8 +11,8 @@ as a JSON parameter set plus a content digest rather than as
 represent an RMSNorm config (``BLOCK_SIZE``, ``ROWS_PER_PROGRAM``), and adding
 a nullable column per operator parameter turns the table into a sparse matrix
 that every query has to special-case. The digest gives configs a stable
-identity for joins, and the JSON is queryable through SQLite's
-``json_extract`` when a report needs one parameter.
+identity for joins, and SQLite's ``json_extract`` remains available should a
+query ever need a predicate on a single parameter.
 """
 
 from __future__ import annotations

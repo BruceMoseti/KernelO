@@ -8,9 +8,21 @@ three stages:
 1. **Enumerate** the full grid.
 2. **Reject** configurations that are infeasible on this device or
    indefensible for this problem, each with a reason that the CLI can print.
-   These rules are derived from hardware limits (shared memory, the 255
-   architectural registers per thread, 128-byte cache lines), not from
-   measurements, so they transfer across GPUs.
+   These rules come in two kinds, and the distinction is worth keeping
+   straight rather than blurring:
+
+   * **Hardware limits** — shared memory per block, 128-byte memory
+     transactions, a pipeline that cannot be filled. These are device
+     properties; a configuration violating one either fails to compile or
+     provably wastes bandwidth.
+   * **Efficiency heuristics** — ``MIN_TILE_ELEMENTS``, the output-per-warp
+     floor, and the register cap below the architectural 255. These are
+     judgement calls about what cannot be competitive. They are the reason
+     the candidate budget exists as a *separate* mechanism: a heuristic that
+     is wrong silently excludes the optimum, so each one is named in its
+     rejection message and each is justified in the constant's docstring.
+
+   Neither kind is derived from measurements, so both transfer across GPUs.
 3. **Budget** the survivors: sort by a documented priority and keep the top
    ``max_candidates``. The budget bounds tuning cost without narrowing the
    rules to the point where they might exclude the true optimum.
@@ -36,20 +48,22 @@ from kernelforge.tuning.config import KernelConfig, Problem
 #: Default candidate budget per problem.
 DEFAULT_MAX_CANDIDATES = 48
 
-#: Hardware limit: a thread can address 255 registers before spilling to
-#: local memory. The accumulator is only part of a thread's register demand
-#: (addresses, pipeline buffers and the epilogue need their share), so the
-#: accumulator alone is capped well below the architectural limit.
+#: Efficiency heuristic, bounded by a hardware limit. A thread can address 255
+#: registers before spilling to local memory, so an accumulator above that
+#: *must* spill. This cap is lower because the accumulator is only part of a
+#: thread's demand -- addresses, pipeline buffers and the epilogue need their
+#: share -- and where exactly the real ceiling falls depends on what the
+#: compiler allocates. 128 is a judgement, not a device property.
 MAX_ACC_REGS_PER_THREAD = 128
 
-#: Below this, the prologue, index arithmetic and epilogue dominate the inner
-#: loop and the configuration cannot be competitive.
+#: Efficiency heuristic. Below this, the prologue, index arithmetic and
+#: epilogue dominate the inner loop.
 MIN_ACC_REGS_PER_THREAD = 4
 
-#: A global load is issued in 128-byte transactions. A tile row shorter than
-#: half a transaction wastes most of every line it touches, because successive
-#: tile rows are strided by the full matrix dimension and cannot be coalesced
-#: into the same line.
+#: Hardware limit. A global load is issued in 128-byte transactions. A tile row
+#: shorter than half a transaction wastes most of every line it touches,
+#: because successive tile rows are strided by the full matrix dimension and
+#: cannot be coalesced into the same line.
 MIN_CONTIGUOUS_TILE_BYTES = 64
 
 
@@ -175,9 +189,16 @@ class SearchSpace(ABC):
 
     def explain(self, problem: Problem, caps: DeviceCaps | None = None) -> str:
         """Human-readable breakdown of the filtering, for `--explain`."""
-        result = self.generate(problem, caps)
+        resolved = caps if caps is not None else device_caps()
+        result = self.generate(problem, resolved)
+        # The counts below are a function of the device's properties, so the
+        # device has to be named -- and labelled when its properties were
+        # assumed rather than read from attached hardware.
+        suffix = "" if resolved.measured else "  <- no device attached"
         lines = [
             f"{problem.describe()}",
+            f"  device           : {resolved.name}, {resolved.sm_count} SMs, "
+            f"{resolved.max_shared_memory_per_block // 1024} KiB shared/block{suffix}",
             f"  grid points      : {result.generated}",
             f"  feasible         : {result.feasible}",
             f"  after prune      : {result.after_prune}",
@@ -250,7 +271,15 @@ class _BlockedGemmSpace(SearchSpace):
     NUM_STAGES = (2, 3, 4)
     GROUP_M = 8
 
-    #: Smallest output tile worth launching a program for.
+    #: Efficiency heuristic, and the largest single rejection bucket (81 of 252
+    #: for the flagship shape), so it deserves justification. A program's
+    #: fixed cost is the group-ordering arithmetic, the operand pointer setup
+    #: and the epilogue's masked store. Below roughly a thousand output
+    #: elements that fixed cost stops being amortised: a 16x32 tile does 512
+    #: multiply-accumulates per K-step against the same prologue a 128x128
+    #: tile pays once for 16384. The exact threshold is a judgement; it is set
+    #: at the smallest power-of-two tile area that keeps a 4-warp program's
+    #: accumulator above `MIN_ACC_REGS_PER_THREAD`.
     MIN_TILE_ELEMENTS = 1024
 
     def grid(self, problem: Problem) -> Iterator[KernelConfig]:
@@ -283,8 +312,12 @@ class _BlockedGemmSpace(SearchSpace):
           the standalone ``triton.compile`` entry point does not run the
           software pipeliner, so its allocation stays at one buffer per operand
           whatever ``num_stages`` says.
-        * ``tests/test_kernels_gpu.py::test_shared_memory_model_matches_the_pipeliner`` checks the
-          full figure against a real JIT launch, where the pipeliner does run.
+        * ``tests/test_kernels_gpu.py`` checks two things against a real JIT
+          launch: that this estimate is an *upper bound* on what a launch
+          allocates, which is the property the filter needs; and separately
+          that at least one multi-stage configuration allocates past a single
+          operand buffer, so the ``num_stages`` factor corresponds to the
+          pipeliner's actual behaviour rather than to an assumption.
 
         The estimate is therefore an upper bound used to reject configurations
         before compiling them. Anything it lets through that the compiler then
@@ -326,8 +359,10 @@ class _BlockedGemmSpace(SearchSpace):
         if acc < MIN_ACC_REGS_PER_THREAD:
             return f"too little work per thread: {acc:.1f} accumulator registers"
 
-        # Each warp of the MMA pipeline needs at least one 16x16 output tile to
-        # own; below that, warps either idle or split the K loop.
+        # Efficiency heuristic. Each warp of the MMA pipeline should own at
+        # least one 16x16 output tile. Triton *can* decompose otherwise by
+        # splitting the K loop within the block, so this excludes
+        # configurations that are inefficient rather than impossible.
         if bm * bn < 256 * config["num_warps"]:
             return f"too little output per warp at num_warps={config['num_warps']}"
 

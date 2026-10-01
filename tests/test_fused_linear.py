@@ -198,7 +198,10 @@ def test_fusion_reduces_the_kernel_launch_count(device):
         iterations=10,
     )
     assert fused.launches_per_iteration == pytest.approx(1.0, abs=0.01)
-    assert unfused.launches_per_iteration > fused.launches_per_iteration
+    # At least three: a GEMM, a bias add and an activation. Not pinned to
+    # exactly three because cuBLAS may split a GEMM across kernels, which is
+    # its choice and not something this assertion should depend on.
+    assert unfused.launches_per_iteration >= 3.0
 
 
 def test_inputs_are_validated(device):

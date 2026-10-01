@@ -2,7 +2,7 @@
 
 # KernelForge
 
-**A GPU kernel autotuning framework that cannot rank an incorrect kernel.**
+**A GPU kernel autotuning framework that never ranks an unverified kernel.**
 
 [![CI](https://github.com/BruceMoseti/KernelO/actions/workflows/ci.yml/badge.svg)](https://github.com/BruceMoseti/KernelO/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
@@ -21,11 +21,14 @@ reference before timing it**, benchmarks with CUDA events, ranks on the median,
 records every result to SQLite with full hardware provenance, and caches the
 winner so a serving process never re-tunes.
 
-The last part matters more than it sounds. A tuner that ranks on latency alone
-will happily select a kernel whose boundary mask is broken, because skipping
-work is fast. Here, verification is a separate pass that runs *before* the
-benchmark loop, which makes that failure structurally impossible rather than a
-matter of care.
+The verification order matters more than it sounds. A tuner that ranks on
+latency alone will happily select a kernel whose boundary mask is broken,
+because skipping work is fast. Here verification is a separate pass that runs
+*before* the benchmark loop, so no code path reaches the ranking without
+passing the gate — a structural property rather than a matter of care. (What
+the gate proves is bounded: a tolerance check against a PyTorch reference on
+seeded inputs at the shapes tested. A kernel wrong only for an untested shape
+still gets through.)
 
 ---
 
@@ -36,8 +39,8 @@ matter of care.
 | **Hardware-derived search space** | A 432-point GEMM grid reduces to 180 feasible and 48 measured candidates. Filters come from device limits — shared memory, registers per thread, 128-byte transactions, pipeline depth, parallelism — so they transfer across GPUs, and every rejection is attributed to a named rule. |
 | **Correctness gate before ranking** | Scale-invariant error metric (`max\|out−ref\| / max\|ref\|`) with per-dtype thresholds. An incorrect configuration is recorded with its error and dropped, never timed. |
 | **Kernels verified with no GPU** | 5 Triton kernels and 1 handwritten CUDA kernel are lowered to PTX/cubin for `sm80` and `sm90` in ordinary CPU CI. Tests assert tensor-core MMA selection and per-element instruction counts **from the generated PTX**. |
-| **481 tests** | 189 run on a CPU-only machine; 292 are GPU-gated and skip with a reason. Correctness covers primes, one-off-a-tile sizes and degenerate single rows across 3 dtypes and 5 tile shapes. |
-| **Operator fusion, quantified** | Bias + GELU folded into the GEMM epilogue: 3 kernel launches → 1, and total DRAM traffic at 4096×11008×4096 fp16 falls from 548 MiB to 204 MiB (2.7×). |
+| **482 tests** | 189 run without a GPU (188 pass, 1 skips for a device); 293 are GPU-gated and skip with a stated reason. Correctness covers primes, one-off-a-tile sizes and degenerate single rows across 3 dtypes and 5 tile shapes. |
+| **Operator fusion, quantified** | Bias + GELU folded into the GEMM epilogue. Total DRAM traffic at 4096×11008×4096 fp16 falls from 548 MiB to 204 MiB — exact arithmetic, hardware-independent. The launch-count collapse to one is asserted by a GPU-gated test. |
 | **Roofline-aware reporting** | Arithmetic intensity is reported against the device ridge point: 1024 FLOP/byte for a prefill GEMM versus **1.0** for single-token decode — 153× below an A100's roof, so no tiling can make it compute-bound. |
 
 > **On performance numbers**
@@ -64,6 +67,7 @@ the easiest to reproduce:
 $ kernelforge tune matmul --m 2048 --n 4096 --k 4096 --dtype fp16 --explain
 
 matmul M/N/K=2048 x 4096 x 4096 fp16
+  device           : A100-SXM4-80GB (assumed), 108 SMs, 163 KiB shared/block  <- no device attached
   grid points      : 432
   feasible         : 180
   after prune      : 180
@@ -76,74 +80,36 @@ matmul M/N/K=2048 x 4096 x 4096 fp16
        9  register pressure
 ```
 
-Every one of those 252 rejections is attributable to a hardware rule, not a
-heuristic cutoff. Changing the problem changes the space — a single-token decode
-GEMM leaves only 30 candidates, all at the smallest tile the grid offers,
-because 150 points now overshoot a problem that is one row tall:
+Every one of those 252 rejections is attributed to a named rule, and the rules
+split into two kinds that the table below keeps apart: **135 come from hardware
+limits** (coalescing, shared memory, pipeline depth) and **117 from efficiency
+heuristics** (a tile too small to be worth a program, too little output per
+warp, a register cap set below the architectural one). The heuristics are
+judgement calls, so they are labelled as such rather than dressed up as
+physics.
 
-```console
-$ kernelforge tune matmul --m 1 --n 11008 --k 4096 --explain
+Changing the problem changes the space. A single-token decode GEMM
+(`--m 1 --n 11008 --k 4096`) leaves only **30** feasible candidates, all at the
+smallest tile the grid offers, because 150 points now overshoot a problem one
+row tall. Changing the *device* changes it too: the same command against RTX
+4090 properties yields 178 rather than 180, three of them newly rejected for
+shared memory the 4090 does not have.
 
-matmul M/N/K=1 x 11008 x 4096 fp16
-  grid points      : 432
-  feasible         : 30
-  after prune      : 30
-  selected (budget): 30 of 48
-  rejections by rule:
-     150  tile overshoot
-     105  uncoalesced A tile
-      81  tile too small
-      30  uncoalesced B tile
-      27  too little output per warp at num_warps=8
-       9  register pressure
+With a GPU attached, `kernelforge tune` runs the same pipeline to completion.
+It prints the winning configuration, then the median latency of every
+implementation it timed — PyTorch eager, `torch.compile`, untuned Triton,
+Triton's own autotuner — the speedup against each, the achieved TFLOP/s, and
+one line that does not depend on the hardware at all:
+
 ```
-
-With a GPU attached, `kernelforge tune` runs the full pipeline. Latencies are
-shown as dots below because they are *not* measurements; only the
-shape-derived quantities, which do not depend on hardware, are filled in:
-
-```console
-$ kernelforge tune matmul --m 2048 --n 4096 --k 4096 --dtype fp16
-
-GPU:    NVIDIA A100-SXM4-80GB
-Shape:  2048 x 4096 x 4096  (M/N/K)
-dtype:  FP16
-
-Verifying candidates... (48 to check)
-.. / 48 configurations passed correctness
-Benchmarking...
-
-Search space: 432 grid points, 180 feasible, 48 measured in ..s
-
-Best configuration
-------------------
-BLOCK_M:      ..
-BLOCK_N:     ...
-BLOCK_K:      ..
-GROUP_M:       8
-num_warps:     .
-num_stages:    .
-
-Performance
------------
-triton_autotune:     ..... ms
-torch_compile:       ..... ms
-torch_eager:         ..... ms
-triton_baseline:     ..... ms
-kernelforge:         ..... ms
-
-speedup vs torch_eager:                ....x
-speedup vs torch_compile:              ....x
-speedup vs triton_baseline:            ....x
-speedup vs triton_autotune:            ....x
-throughput:                     .... TFLOP/s
 arithmetic intensity:       1024.0 FLOP/byte
 ```
 
-The last line is the one to read first. At 1024 FLOP/byte this shape sits 6.7×
-above an A100's ridge point of ~153, so it genuinely can be compute-bound and
-tuning the tiling is worth doing. A shape *below* the ridge point cannot be, and
-the honest conclusion there is that the kernel is already finished — see
+That is the line to read first. At 1024 FLOP/byte this shape sits 6.7× above an
+A100's ridge point of ~153, so it genuinely can be compute-bound and tuning the
+tiling is worth doing. A shape *below* the ridge point cannot be, and the honest
+conclusion there is that the kernel is already finished — which is exactly what
+the framework reports for single-token decode (1.0 FLOP/byte). See
 [§ Benchmark methodology](#benchmark-methodology).
 
 `kernelforge report` reads the SQLite database and renders `summary.md`,
@@ -201,16 +167,11 @@ flowchart TB
     class DB,CC store
 ```
 
-Three properties of this shape are load-bearing:
-
-1. **The gate sits on the only path to the benchmark.** There is no edge from
-   compile to rank that bypasses verification.
-2. **Failures are data, not exceptions.** A rejected filter, a Triton
-   `OutOfResources`, and a wrong answer all land in the same results table with
-   a reason, so "48 of 432" is auditable rather than asserted.
-3. **The tuner is generic over `Operator`.** It never mentions a GEMM. Adding an
-   operator means implementing an interface, not editing the pipeline — which is
-   what let RMSNorm bring a completely different parameter set.
+Two things the diagram cannot show. Failures are *data*: a filter rejection, a
+Triton `OutOfResources` and a wrong answer all land in the same results table
+with a reason, so "48 of 432" is auditable rather than asserted. And the tuner
+is generic over `Operator` — it never mentions a GEMM, which is what let RMSNorm
+bring a completely different parameter set without touching the pipeline.
 
 ---
 
@@ -236,10 +197,12 @@ Problem(op, dims, dtype)
 ```
 
 Two passes rather than one interleaved loop, because compiling candidate *i+1*
-in the middle of timing candidate *i* pollutes the measurement. Five baselines
-are timed under identical settings for comparison: PyTorch eager,
-`torch.compile`, an untuned Triton configuration, Triton's own
-`@triton.autotune`, and the handwritten CUDA kernel where one exists.
+in the middle of timing candidate *i* pollutes the measurement. Baselines are
+timed under identical settings for comparison. Every operator gets PyTorch
+eager, `torch.compile` and an untuned Triton configuration; the GEMM adds
+Triton's own `@triton.autotune` and RMSNorm adds the handwritten CUDA kernel,
+so the comparison set is three to four implementations depending on the
+operator.
 
 ---
 
@@ -251,21 +214,33 @@ The naive GEMM grid is 4×4×3×3×3 = 432 points. Measuring all of them costs
 minutes per shape on configurations that cannot win. Each filter encodes a
 hardware fact:
 
-| Rule | Model | Why it binds |
-| --- | --- | --- |
-| Shared memory | `num_stages × BLOCK_K × (BLOCK_M + BLOCK_N) × itemsize` | Triton's pipeliner holds `num_stages` operand tiles in flight. A 128×128 tile at `BLOCK_K=64` over 4 stages needs 128 KiB — fits an A100's 163 KiB opt-in budget, does not fit an RTX 4090's 99 KiB. |
-| Register pressure | `BLOCK_M × BLOCK_N / threads` fp32 accumulators per thread, capped at 128 | A thread can address 255 registers; the accumulator is only part of its demand, so 128×128 on 2 warps (256 per thread) spills to local memory. |
-| Coalescing | `BLOCK_K × itemsize ≥ 64 B`, same for `BLOCK_N` | A load is issued in 128-byte transactions. Successive tile rows are strided by the full matrix dimension, so a 32-byte row segment wastes three quarters of every line it touches. |
-| Tile overshoot | tile ≤ 2× the problem dimension, unless already the smallest in the grid | A tile larger than the problem computes masked-off work. The escape clause exists because the smallest `BLOCK_M` is 16, and without it every candidate for a single-token GEMM is rejected. |
-| Pipeline depth | `num_stages ≤ ceil(K / BLOCK_K)` | There is nothing to overlap if the K loop is shorter than the pipeline. |
-| Parallelism | grid ≥ half the SM count, *applied only when some tiling reaches a full wave* | Conditional because for a small enough problem no tiling fills the machine, and the least-bad option still has to be measured. |
+| Rule | Kind | Model | Why it binds |
+| --- | --- | --- | --- |
+| Shared memory | hardware | `num_stages × BLOCK_K × (BLOCK_M + BLOCK_N) × itemsize` ≤ per-block opt-in limit | Triton's pipeliner holds `num_stages` operand tiles in flight. A 128×128 tile at `BLOCK_K=64` over 4 stages needs 128 KiB — fits an A100's 163 KiB, does not fit an RTX 4090's 99 KiB. |
+| Coalescing | hardware | `BLOCK_K × itemsize ≥ 64 B`, same for `BLOCK_N` | A load is issued in 128-byte transactions. Successive tile rows are strided by the full matrix dimension, so a 32-byte row segment wastes three quarters of every line it touches. |
+| Pipeline depth | hardware | `num_stages ≤ ceil(K / BLOCK_K)`, enforced for `num_stages > 2` | There is nothing to overlap if the K loop is shorter than the pipeline. |
+| Register pressure | heuristic | `BLOCK_M × BLOCK_N / threads` fp32 accumulators per thread, in `[4, 128]` | A thread can address 255 registers, so 128×128 on 2 warps (256 per thread) *must* spill. The 128 cap is a judgement: the accumulator is only part of a thread's demand, and the true limit depends on what else the compiler allocates. |
+| Tile too small | heuristic | `BLOCK_M × BLOCK_N ≥ 1024` output elements | Below this the prologue, index arithmetic and epilogue dominate the inner loop. The threshold is a judgement, not a device property — and it is the single largest rejection bucket (81 of 252). |
+| Output per warp | heuristic | `BLOCK_M × BLOCK_N ≥ 256 × num_warps` | Each warp of the MMA pipeline should own at least one 16×16 output tile. Triton *can* decompose otherwise by splitting K within the block, so this excludes configurations that are inefficient rather than impossible. |
+| Tile overshoot | hardware-ish | tile ≤ 2× the problem dimension, unless already the smallest in the grid | A tile larger than the problem computes masked-off work that is thrown away. The escape clause exists because the smallest `BLOCK_M` is 16; without it every candidate for a single-token GEMM is rejected (a bug this project shipped and fixed). |
+| Parallelism | hardware | grid ≥ half the SM count, *applied only when some tiling reaches a full wave* | Conditional because for a small enough problem no tiling fills the machine, and the least-bad option still has to be measured. |
+
+Between the filters and the budget sits a set-level prune that neither demo
+above exercises, because it only bites in a middle regime. At
+`512×512×512` on an A100 it removes 48 of 180 candidates — the coarse tilings
+whose launch grid occupies under half the SMs. At `2048×4096×4096` it removes
+nothing, because every surviving tiling fills the machine; at `256×256` it also
+removes nothing, because none of them can, and the least-bad option still has
+to be measured. That conditional is the whole rule.
 
 Survivors are then sorted and truncated to a budget. The priority key is
 `(−min(programs, sm_count), −reuse, waste)`; clamping the first term at the SM
 count is what makes the same function correct in both regimes — for a large
 problem every tiling fills the GPU, the term ties, and data reuse
 `BM·BN/(BM+BN)` decides; for a 256×256 problem it cannot, and the term prefers
-the tiling that keeps more multiprocessors busy.
+the tiling that keeps more multiprocessors busy. That clamp replaced a binary
+flag which, on a 256×256 GEMM, selected 128×128 tiles occupying four of an
+A100's 108 multiprocessors.
 
 Separating *filters* (hardware facts, which can exclude the true optimum if
 wrong) from the *budget* (a cost bound, which cannot) is deliberate. All three
@@ -299,8 +274,12 @@ claim: the standalone compile entry point does not run the software pipeliner,
 so its shared-memory allocation stays at one buffer per operand however high
 `num_stages` is — confirmed by inspecting the TTGIR, and unchanged by supplying
 full pointer-divisibility hints. The CPU test therefore checks the single-buffer
-tile footprint against the compiler's own figure, and the `num_stages` factor is
-checked against a real launch in a GPU-gated test.
+tile footprint against the compiler's own figure. A GPU-gated test then checks
+two things a launch can show: that the estimate is an *upper bound* on real
+usage, which is the property the filter needs — over-estimating costs
+candidates, under-estimating admits configurations the device cannot run — and
+separately that at least one multi-stage configuration allocates past a single
+operand buffer, so the `num_stages` factor is confirmed rather than assumed.
 
 ### Why the correctness metric is scale-invariant
 
@@ -361,10 +340,12 @@ tmp + bias → tmp2   read M·N, write M·N
 gelu(tmp2) → y      read M·N, write M·N
 ```
 
-Three launches and `5·M·N` of output traffic against `M·N` fused. At
-4096×11008×4096 fp16 that is total DRAM traffic of 548 MiB versus 204 MiB, a
-344 MiB saving. The launch-count claim is structural and asserted directly in
-`test_fusion_reduces_the_kernel_launch_count`; the traffic claim is a prediction
+Three operations and `5·M·N` of output traffic against one launch and `M·N`
+fused. At 4096×11008×4096 fp16 that is total DRAM traffic of 548 MiB versus
+204 MiB, a 344 MiB saving. The launch-count claim is structural and asserted in
+`test_fusion_reduces_the_kernel_launch_count` (GPU-gated: the fused path must
+be exactly one launch, the unfused path at least three); the traffic claim is a
+prediction
 written down *before* measurement in
 [`docs/CASE_STUDIES.md`](docs/CASE_STUDIES.md), together with the explicit
 expectation that **latency will improve by less than the traffic ratio
@@ -401,95 +382,32 @@ thirty-second compile sweep inside an inference loop would be a bug.
 
 ## Engineering decisions
 
-<details>
-<summary><b>Separating hardware filters from the candidate budget</b></summary>
+Two that shaped the most code. [`DESIGN.md`](DESIGN.md) covers the rest,
+including the ones that went the other way — no subprocess isolation per
+candidate, no fixed-column config table, no tune-on-cache-miss, and no batched
+timing for sub-microsecond kernels.
 
-- **Problem.** 432 grid points per GEMM shape; measuring 180 feasible ones costs
-  minutes of compiling per shape.
-- **Approach.** Two distinct mechanisms: filters that encode what the hardware
-  cannot do, and a budget that bounds search cost by keeping the top N under a
-  documented priority ordering.
-- **Why.** A filter can exclude the true optimum if its model is wrong. A budget
-  cannot — it only costs the chance of finding it. Keeping them separate stops
-  the filters from being quietly tightened until the count looks tidy.
-- **Alternative considered.** Tightening the rules until ~50 candidates survive
-  naturally. Rejected: the thresholds required had no hardware justification,
-  which is exactly how a search space silently loses its optimum.
-- **Tradeoff.** The budget can miss the best configuration on an unusual shape.
-  Mitigated by reporting all three counts and making the budget a CLI flag.
-</details>
+**Separating hardware filters from the candidate budget.** 432 grid points per
+GEMM shape, and measuring the 180 feasible ones costs minutes of compilation.
+The tempting move is to tighten the rules until ~50 survive; I rejected it
+because the thresholds required had no hardware justification, and an
+unjustified filter is how a search space silently loses its optimum. Instead
+there are two mechanisms: *filters* (shared memory, 128-byte transactions,
+pipeline depth — plus three labelled efficiency heuristics) and a *budget* that
+keeps the top 48 under a documented priority. The asymmetry is the argument: a
+wrong filter can exclude the true optimum, a budget can only cost the chance of
+finding it. **Tradeoff:** the budget can miss the best configuration on an
+unusual shape, so all three counts are reported and the budget is a CLI flag.
 
-<details>
-<summary><b>Verification as a separate pass, before benchmarking</b></summary>
-
-- **Problem.** A tuner ranking on latency alone prefers kernels that skip work,
-  and a broken boundary mask is precisely a kernel that skips work.
-- **Approach.** Pass A compiles and verifies every candidate; pass B times only
-  the survivors.
-- **Why.** It makes the invariant structural rather than a matter of discipline —
-  there is no code path from compile to rank that bypasses the gate. It also
-  keeps Triton's compilation of candidate *i+1* out of the measurement of
-  candidate *i*.
-- **Alternative considered.** Verify-then-time inside one loop. Rejected on the
-  measurement-pollution ground alone.
-- **Tradeoff.** Peak memory holds the reference output for the whole run, and a
-  correct-but-slow candidate is compiled before being timed. Both are cheap
-  next to a wrong winner.
-</details>
-
-<details>
-<summary><b>Open key/value configurations instead of named GEMM fields</b></summary>
-
-- **Problem.** A GEMM is tuned over `BLOCK_M/N/K`; an RMSNorm over
-  `BLOCK_SIZE/ROWS_PER_PROGRAM`. They share no parameter.
-- **Approach.** `KernelConfig` holds a hashable mapping; each operator's search
-  space owns its schema. The database stores JSON plus a content digest.
-- **Why.** Named GEMM fields would force every other operator to carry
-  meaningless ones, and the awkwardness would propagate into the schema and
-  every query.
-- **Alternative considered.** Fixed columns per the obvious relational design.
-  Rejected: it cannot represent an RMSNorm configuration at all.
-- **Tradeoff.** Loses column-level type checking and direct SQL predicates on
-  one parameter. Recovered where needed via `json_extract`, and the report layer
-  expands the JSON into DataFrame columns, which is where that shape is useful.
-</details>
-
-<details>
-<summary><b>In-process candidate execution, not subprocess isolation</b></summary>
-
-- **Problem.** A kernel that triggers an illegal memory access poisons the CUDA
-  context, and every later candidate in the process then fails.
-- **Approach.** Run candidates in-process, catch and classify per-candidate
-  exceptions, record them as rows.
-- **Why.** A process launch plus a CUDA context per candidate is seconds each
-  against a 48-candidate budget. Triton's own autotuner makes the same choice.
-- **Alternative considered.** One subprocess per candidate. Rejected on cost,
-  and because these kernels keep every load in bounds by construction (the `% M`
-  wrap) so the exposure is to kernels added later.
-- **Tradeoff.** A future kernel with an out-of-bounds access takes down the rest
-  of the sweep. Accepted and documented; the failure is loud, not silent.
-</details>
-
-<details>
-<summary><b>Shipping no benchmark numbers</b></summary>
-
-- **Problem.** The project was developed with no GPU. Performance claims are the
-  whole point of a tuning framework.
-- **Approach.** Commit the apparatus with zero measured figures, and build a
-  verification path that does not need a device (PTX-level compilation and
-  instruction assertions in CI).
-- **Why.** Plausible invented numbers would be undetectable to a casual reader
-  and disqualifying to a careful one. A reviewer can reproduce every claim in
-  this README by inspection.
-- **Alternative considered.** Quoting published A100 figures as illustrative.
-  Rejected: an illustrative number becomes a remembered number.
-- **Tradeoff.** The README has no headline speedup, which is a real cost to a
-  30-second reader. Partly recovered by reporting shape-derived quantities —
-  traffic ratios, arithmetic intensity, candidate counts — which are exact and
-  hardware-independent.
-</details>
-
----
+**Verification as a separate pass, before benchmarking.** A tuner ranking on
+latency prefers kernels that skip work. Pass A compiles and verifies every
+candidate; pass B times only survivors. This makes the invariant structural
+rather than a matter of discipline, and keeps Triton's compilation of candidate
+*i+1* out of the measurement of candidate *i*. **Alternative considered:**
+verify-then-time inside one loop, rejected on the measurement-pollution ground
+alone. **Tradeoff:** peak memory holds the reference output for the whole run,
+and a correct-but-slow candidate is compiled before being timed — both cheap
+next to a wrong winner.
 
 ## Verification
 
@@ -498,7 +416,7 @@ The unusual property of this repository is how much is checkable without a GPU.
 | Claim | Mechanism | Where |
 | --- | --- | --- |
 | Every kernel compiles for Ampere and Hopper | `triton.compile` → PTX + cubin for `sm80`/`sm90` | `tests/test_triton_compile.py` |
-| Every budgeted candidate compiles, for a square *and* a decode shape | the same, over the real search space | `test_full_candidate_budget_compiles` |
+| Every budgeted candidate compiles, for a square *and* a decode shape | the same, over the real search space: 48 candidates for 2048×4096×4096, 30 for 1×11008×4096 | `test_full_candidate_budget_compiles` |
 | The fp16 GEMM reaches the tensor cores | `mma.sync.aligned.m16n8k16` asserted in generated PTX | `test_fp16_gemm_uses_tensor_cores` |
 | The fused epilogue costs one exponential per element | `ex2.approx.f32` count vs accumulators per thread | `test_fused_epilogue_costs_one_exponential_per_element` |
 | The shared-memory model matches the compiler | single-buffer tile footprint vs the compiler's allocation | `test_shared_memory_estimate_bounds_the_tile` |
@@ -506,12 +424,12 @@ The unusual property of this repository is how much is checkable without a GPU.
 | Its instruction profile is as intended | 5 warp shuffles, 2 barriers, 1 `rsqrt`, no `.func` | `test_warp_reduction_is_fully_unrolled` |
 | An incorrect configuration is never ranked | tuner driven end-to-end on a CPU operator whose configs fail in each real way | `tests/test_tuner.py` |
 | Filters are device-specific | a tile feasible on an A100 is rejected for an RTX 4090, with neither attached | `test_shared_memory_filter_is_device_specific` |
-| Importing the package needs neither Triton nor a CUDA context | each module imported in a fresh interpreter | `tests/test_cpu_only_imports.py` |
+| Importing the package needs neither Triton nor a CUDA context | 13 CPU-side modules imported in a fresh subprocess, which then reports whether Triton or a CUDA context was pulled in | `tests/test_cpu_only_imports.py` |
 
 ```console
 $ make test                 # 188 passed, 1 skipped — no GPU required
 $ make compile-check        # kernels → PTX for sm80 and sm90
-$ make test-slow            # compile all 48 budgeted candidates
+$ make test-slow            # compile every budgeted candidate (48 square, 30 decode)
 $ make test-all             # everything, on a machine with a CUDA device
 ```
 
@@ -551,23 +469,15 @@ a kernel can be made faster at all.
 
 ## Tech stack
 
-**Languages** · Python 3.10+, Triton (GPU DSL), CUDA C++, SQL
-
-**GPU** · Triton 3.0+ (JIT and AOT compilation, PTX/cubin inspection), CUDA
-(warp shuffles, shared-memory reductions, tensor-core MMA), PyTorch 2.2+ ATen
-extension via `torch.utils.cpp_extension`
-
-**Numerics** · NumPy, fp16/bf16/fp32 with explicit TF32 control, roofline
-analysis
-
-**Storage** · SQLite (stdlib `sqlite3`, hand-written schema and queries), JSON
-config cache with atomic writes
-
-**Profiling** · `torch.profiler` (kernel attribution, launch counts), NVIDIA
-Nsight Compute (occupancy, SM/DRAM throughput, L2, warp stalls)
-
-**Tooling** · pytest (markers for GPU/slow gating), ruff, GitHub Actions, Make,
-Docker, pandas + matplotlib for report generation
+| Area | Used for |
+| --- | --- |
+| **Triton** 3.0+ | the five GPU kernels; also its AOT path, which lowers them to PTX/cubin for a named architecture with no device, and whose output the tests assert against |
+| **CUDA C++** | a second RMSNorm (`__shfl_down_sync` warp reduction, two-stage shared-memory block reduction) exposed as an ATen extension built on demand |
+| **PyTorch** 2.2+ | reference implementations, `torch.compile` baselines, CUDA-event timing, `torch.profiler` kernel attribution, `cpp_extension` |
+| **SQLite** | the experiment log — hand-written schema and queries over stdlib `sqlite3`, no ORM |
+| **Nsight Compute** | occupancy, SM/DRAM throughput against peak, L2 behaviour, warp stall reasons |
+| **pytest / ruff / Actions** | GPU and slow test gating, lint, and CI that asserts the device-code checks ran rather than skipped |
+| **pandas / matplotlib** | report generation from the database (an optional extra, so the core installs without them) |
 
 ---
 
@@ -601,7 +511,7 @@ kernelforge/
 ├── testing.py               the correctness gate
 └── cli/main.py              tune · benchmark · compare · profile · report · cache
 
-tests/                       481 tests; compile_harness.py + cuda_compile_harness.py
+tests/                       482 tests; compile_harness.py + cuda_compile_harness.py
                              lower kernels to PTX with no GPU
 docs/                        BENCHMARKING.md (methodology), CASE_STUDIES.md
 scripts/run_experiments.sh   full reproduction from a clean database
@@ -699,7 +609,7 @@ print(result.tflops(result.best.median_ms))
 
 ## Testing
 
-481 tests, split by what they need rather than by layer.
+482 tests, split by what they need rather than by layer.
 
 | Suite | Count | Needs a GPU | What it covers |
 | --- | --- | --- | --- |
@@ -707,7 +617,7 @@ print(result.tflops(result.best.median_ms))
 | Kernel compilation | 28 | no | every kernel → PTX/cubin for `sm80`/`sm90`; instruction-level assertions |
 | Tuner end-to-end | 16 | no | the full pipeline driven by a CPU operator whose configurations fail in each way a real one does |
 | Import hygiene | 3 | no | no Triton import, no CUDA context at module import |
-| Kernel correctness | 292 | yes | primes, one-off-a-tile sizes, single rows/columns across 3 dtypes and 5 tile shapes; every budgeted candidate against the reference |
+| Kernel correctness | 293 | yes | GEMM 88, softmax/vector-add 70, RMSNorm 60, fused linear 57, transformer parity 7, launch metadata 5, 6 others. Primes, one-off-a-tile sizes and degenerate rows across 3 dtypes; the GEMM and fused suites also sweep 5 tile shapes and check every budgeted candidate against the reference |
 
 ```bash
 make test        # CPU-safe suite
@@ -720,7 +630,9 @@ make check       # lint + CPU suite (the pre-push gate)
 Tests designed to fail if a specific decision were reverted:
 
 - the fp32 GEMM holds a `1e-5` threshold **only** because `tl.dot` is pinned to
-  IEEE — removing the pin fails it by two orders of magnitude;
+  IEEE; TF32's 10-bit mantissa carries ~1e-3 relative error against a 1e-5
+  threshold, so removing the pin should fail it by about two orders of
+  magnitude (predicted from the formats, not yet observed);
 - the fp16 RMSNorm needs its fp32 reduction for an 8192-wide row, and the test
   asserts the naive fp16 reduction is measurably worse, so the test has teeth;
 - softmax survives logits of 60, which overflow fp16 `exp` without the max
@@ -740,8 +652,6 @@ that baseline produces a flaky signal teams learn to ignore.
 ---
 
 ## Future improvements
-
-Ordered by engineering value, not ease.
 
 1. **Two-pass RMSNorm for rows wider than 16 K.** The current kernel is
    single-pass and therefore holds the row in registers, which caps the hidden
@@ -780,7 +690,7 @@ Ordered by engineering value, not ease.
 | [`DESIGN.md`](DESIGN.md) | Why each component is shaped the way it is, and the decisions that went the other way |
 | [`docs/BENCHMARKING.md`](docs/BENCHMARKING.md) | Full measurement methodology, including what the numbers do not mean |
 | [`docs/CASE_STUDIES.md`](docs/CASE_STUDIES.md) | Three performance analyses — tile size, warp count, fusion — with predictions stated before measurement |
-| [`PROJECT_NOTES.md`](PROJECT_NOTES.md) | Engineering narrative: hardest problems, bugs found, what I would change |
+| [`PROJECT_NOTES.md`](PROJECT_NOTES.md) | Engineering narrative: hardest problem, the bugs this project shipped and fixed, a design FAQ, and what is still missing |
 
 ## License
 

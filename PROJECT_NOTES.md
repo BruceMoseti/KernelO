@@ -1,11 +1,11 @@
 # Project notes
 
-Engineering narrative for KernelForge: what the problem was, what I built, what
-went wrong, and what I would change. Written for my own interview preparation,
-so it is candid about limits rather than promotional.
+Engineering narrative for KernelForge: what the problem was, how it was built,
+what went wrong, and what I would change. Candid about limits rather than
+promotional — the failures are the useful part.
 
-Everything here is traceable to code or git history in this repository. Where I
-could not verify something, it says so.
+Everything here is traceable to code or git history in this repository. Where
+something could not be verified, it says so.
 
 ---
 
@@ -104,7 +104,7 @@ cache; report generation (SQLite → markdown, CSV, matplotlib figures); the CLI
 the transformer-block integration.
 
 **Verification** — the ahead-of-time compilation harnesses that lower Triton and
-CUDA kernels to PTX with no GPU, 481 tests, and two CI workflows.
+CUDA kernels to PTX with no GPU, 482 tests, and two CI workflows.
 
 ---
 
@@ -162,14 +162,24 @@ no change. So the standalone compile entry point does not pipeline, which means
 the CPU test **cannot** check the `num_stages` factor.
 
 I corrected the claim rather than the test: the CPU test now checks the
-single-buffer tile footprint against the compiler's own figure (asserting it
-within a factor-of-two band, because the operand layout is padded for
-swizzling), and the `num_stages` factor is checked against a real launch in a
-GPU-gated test. The limitation is recorded in `DESIGN.md`.
+single-buffer tile footprint against the compiler's own figure (within a
+factor-of-two band, because the operand layout is padded for swizzling).
 
-The lesson I would actually say out loud in an interview: a test is only worth
-what its docstring claims, and I had written a claim my test did not support.
-Finding that required being suspicious of a result that *looked* fine.
+There is a second-order version of the same mistake that I also had to fix.
+The GPU-gated replacement asserted `actual <= estimate * 1.25` — an upper
+bound, which is the property the *filter* needs, but which a single-buffer
+allocation satisfies trivially. So it did not check the `num_stages` factor
+either, while the docs said it did. There are now two tests: one for the upper
+bound, and one asserting that at least one multi-stage configuration allocates
+past a single operand buffer, which is the only thing that confirms the factor
+corresponds to the pipeliner's behaviour. "At least one" rather than "every",
+because Triton may legitimately decline to pipeline a given loop.
+
+The lesson worth recording: a test is only worth what its docstring claims, and
+I had written a claim my test did not support. Finding it required being
+suspicious of a result that *looked* fine — the model predicted a 4x spread and
+the compiler reported none, and the temptation was to treat that as a
+measurement artefact rather than read the IR.
 
 ---
 
@@ -215,8 +225,9 @@ past the end wrap to some other *valid* row, so every load is in bounds;
 lanes cannot contaminate valid ones; and the epilogue's store mask discards
 them. Only the K axis needs a real mask, because a short final K step must
 contribute *zero* rather than wrapped data. The payoff is no M/N masking in the
-inner loop at all. I verified this by hand for `M=1`, `N=1` and `K=1` and with
-292 GPU-gated tests over primes and one-off-a-tile sizes.
+inner loop at all. I reasoned it through by hand for `M=1`, `N=1` and `K=1`,
+and the 88 GPU-gated tests in `test_matmul.py` exercise it over primes,
+one-off-a-tile sizes and degenerate rows -- though none of them has run.
 
 ---
 
@@ -333,8 +344,8 @@ quoting TFLOP/s for RMSNorm would be meaningless.
 
 ## 9. How I tested it
 
-481 tests, organised by what they *need* rather than by layer: 189 run on a
-CPU-only machine, 292 are GPU-gated and skip with a stated reason.
+482 tests, organised by what they *need* rather than by layer: 189 run on a
+CPU-only machine, 293 are GPU-gated and skip with a stated reason.
 
 **The structural guarantee.** The property that matters most — an incorrect
 configuration is never ranked — is tested without a GPU, by driving the tuner
@@ -354,7 +365,9 @@ against the reference, not just the shipped default.
 **Tests designed to fail if a specific decision were reverted:**
 
 - the fp32 GEMM holds its `1e-5` threshold only because `tl.dot` is pinned to
-  IEEE; removing the pin fails it by two orders of magnitude;
+  IEEE; TF32's 10-bit mantissa carries ~1e-3 relative error against a 1e-5
+  threshold, so removing the pin should fail it by about two orders of
+  magnitude (predicted from the formats, not yet observed);
 - the fp16 RMSNorm needs its fp32 reduction for an 8192-wide row — and the test
   also asserts the naive fp16 reduction is measurably *worse*, so the test has
   teeth rather than merely passing;
@@ -362,15 +375,17 @@ against the reference, not just the shipped default.
   without the max subtraction;
 - `gelu(xw + b)` is pinned apart from `gelu(xw) + b` by a zero-weight case,
   which fixes the operation order;
-- `test_cpu_only_imports.py` imports each module in a fresh subprocess and
-  asserts neither Triton nor a CUDA context was pulled in — a claim that was
-  true and one careless top-level import from being silently false.
+- `test_cpu_only_imports.py` imports the 13 CPU-side modules in a fresh
+  subprocess and asserts neither Triton nor a CUDA context was pulled in — a
+  claim that was true and one careless top-level import from being silently
+  false. The aggregate answer is what matters, so it is one subprocess; the
+  per-module bisect runs only to name the offender on failure.
 
-**What is honestly untested:** every GPU execution path. 292 tests, all Triton
+**What is honestly untested:** every GPU execution path. 293 tests, all Triton
 launch behaviour, the ATen launch site of the CUDA extension, the Nsight
 integration and all profiling were written but never run. The compile checks
-substantially de-risk the kernel *bodies*; they say nothing about launch time. I
-would not claim otherwise in an interview.
+substantially de-risk the kernel *bodies*; they say nothing about launch-time
+behaviour, and nothing in this repository claims otherwise.
 
 ---
 
@@ -473,9 +488,10 @@ Then, in order of engineering value:
 
 ---
 
-## 12. Likely interview questions
+## 12. Design FAQ
 
-Concise points I should be able to expand on.
+Questions a reader of this code tends to ask, and the short answers. Each one
+points at a decision that is argued at more length above or in `DESIGN.md`.
 
 **1. Why does the correctness gate run before benchmarking rather than after?**
 A tuner ranking on latency alone prefers kernels that skip work, and a broken
@@ -590,7 +606,7 @@ persists results with provenance, and caches across processes. I kept Triton's
 autotuner as a *measured baseline* rather than asserting the difference.
 
 **15. What is the biggest weakness of this project?** No measured numbers, and
-every GPU execution path untested — 292 tests written and never run. I would not
+every GPU execution path untested — 293 tests written and never run. I would not
 soften that. What I would add is that the constraint produced a verification
 strategy I would now use even with hardware available, because PTX-level
 assertions catch things a passing numerical test does not: that a kernel reached

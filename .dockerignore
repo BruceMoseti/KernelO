@@ -1,0 +1,19 @@
+# Keep the build context small and the image free of host state.
+.git
+.github
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+.venv
+venv
+build
+dist
+
+# Measurements belong to the machine that produced them; copying a host
+# database into the image would mix two GPUs' results into one file.
+results/*.db
+results/*.csv
+reports/
+*.ncu-rep

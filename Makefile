@@ -29,8 +29,7 @@ install: ## Install the package with dev and report extras
 
 install-cpu: ## Install with CPU PyTorch, for machines without a GPU
 	pip install torch --index-url https://download.pytorch.org/whl/cpu
-	pip install -e '.[dev,report]'
-	pip install triton
+	pip install -e '.[dev,report,gpu]'
 
 # --- verification --------------------------------------------------------
 test: ## Run the CPU-safe suite (no GPU required)
@@ -83,7 +82,7 @@ profile: ## Attribute device time and count kernel launches (GPU)
 report: ## Render tables and figures from the results database
 	$(KF) report
 
-experiments: ## Full reproduction: tune, benchmark, profile, report (GPU, ~30 min)
+experiments: ## Full reproduction: tune, benchmark, profile, report (GPU, long)
 	bash scripts/run_experiments.sh
 
 cache: ## List tuned configurations held in the cache

@@ -49,10 +49,10 @@ jobs:
       - name: Install PyTorch (CPU)
         run: pip install torch --index-url https://download.pytorch.org/whl/cpu
 
+      # The `gpu` extra carries Triton, which the kernel compilation checks
+      # need even though they never launch anything.
       - name: Install KernelForge
-        run: |
-          pip install -e '.[dev,report]'
-          pip install triton
+        run: pip install -e '.[dev,report,gpu]'
 
       # Triton lowers kernels to PTX and cubin for a named target without a
       # device, and clang does the same for the handwritten CUDA kernel given
@@ -106,8 +106,6 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
-      - run: |
-          pip install -e '.[dev]'
-          pip install triton
-      - name: Compile all 48 GEMM candidates for sm80
+      - run: pip install -e '.[dev,gpu]'
+      - name: Compile every budgeted GEMM candidate for sm80 (48 square, 30 decode)
         run: pytest -m slow -q

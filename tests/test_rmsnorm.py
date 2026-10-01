@@ -94,11 +94,16 @@ def test_wide_fp16_rows_need_the_fp32_reduction(device):
     )
     assert result.error < 5e-3
 
-    # And the naive fp16 reduction really is worse, so the test has teeth.
-    naive_rms = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + 1e-5)
-    naive = (x * naive_rms * gamma).to(torch.float16)
+    # And a genuinely fp16 reduction really is worse, so the test has teeth.
+    #
+    # `dtype=torch.float16` on the sum is load-bearing: PyTorch's CUDA
+    # reduction for half promotes to fp32 internally, so `x.pow(2).mean(-1)`
+    # would *also* accumulate in fp32 and the comparison would isolate nothing.
     from kernelforge.testing import verify
 
+    naive_sum = x.pow(2).sum(dim=-1, keepdim=True, dtype=torch.float16)
+    naive_rms = torch.rsqrt(naive_sum.to(torch.float32) / x.shape[-1] + 1e-5)
+    naive = (x * naive_rms * gamma).to(torch.float16)
     assert verify(rmsnorm_reference(x, gamma), naive, dtype=torch.float16).error > result.error
 
 

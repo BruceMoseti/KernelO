@@ -1,7 +1,10 @@
 """Blocked GEMM: ``C = A @ B``.
 
-Written from the blocked-GEMM model rather than transcribed, so the reasoning
-behind each piece is recorded here.
+Structurally this is the standard blocked GEMM -- grouped program ordering,
+fp32 accumulation, masked K tail -- and it does not claim to be novel. What is
+recorded here is the reasoning behind each piece, plus the one deliberate
+addition: pinning ``tl.dot`` to IEEE so that an fp32 comparison measures the
+kernel rather than the precision gap.
 
 **Why tile at all.** Computing one output element reads a row of A and a
 column of B: 2K elements for K multiply-adds, an arithmetic intensity of 1
