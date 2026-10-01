@@ -176,6 +176,67 @@ def test_nsight_sections_are_validated():
         build_command(["python"], sections=("not_a_section",))
 
 
+#: ``ncu --page raw --csv`` output as NVIDIA's Nsight Compute forum moderator
+#: posted it (forums.developer.nvidia.com/t/220320), behind the ``==PROF==``
+#: lines that the Nsight Compute CLI documentation shows on the same stream.
+NCU_RAW_CSV = """\
+==PROF== Connected to process 5268
+==PROF== Profiling "vectorAdd_A" - 0: 0%....50%....100% - 46 passes
+==PROF== Disconnected from process 5268
+"ID","Process ID","Process Name","Host Name","Kernel Name","Kernel Time","Context","Stream","launch__grid_size","sm__warps_active.avg.pct_of_peak_sustained_active"
+"","","","","","","","","","%"
+"0","12440","vectorAdd.exe","127.0.0.1","vectorAdd(const float *, const float *, float *, int)","2021-Nov-08 19:56:53","1","7","196","77.969567"
+"""
+
+
+def ncu_printing(monkeypatch, stdout: str):
+    import subprocess
+
+    from kernelforge.profiling import nsight
+
+    monkeypatch.setattr(nsight, "ncu_available", lambda: True)
+    monkeypatch.setattr(
+        nsight.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout, ""),
+    )
+    return nsight.run(["./vectorAdd"])
+
+
+def test_nsight_reads_the_raw_page_csv(monkeypatch):
+    run = ncu_printing(monkeypatch, NCU_RAW_CSV)
+    assert run.metrics == {
+        "0: vectorAdd(const float *, const float *, float *, int)": {
+            "launch__grid_size": "196",
+            "sm__warps_active.avg.pct_of_peak_sustained_active": "77.969567 %",
+        }
+    }
+
+
+def test_nsight_keeps_each_launch_of_a_kernel(monkeypatch):
+    second_launch = NCU_RAW_CSV.splitlines()[-1].replace('"0"', '"1"', 1)
+    run = ncu_printing(monkeypatch, NCU_RAW_CSV + second_launch + "\n")
+    assert list(run.metrics) == [
+        "0: vectorAdd(const float *, const float *, float *, int)",
+        "1: vectorAdd(const float *, const float *, float *, int)",
+    ]
+
+
+@pytest.mark.gpu
+def test_nsight_reads_the_csv_a_real_ncu_prints():
+    """The fixtures above follow NVIDIA's published example; this checks a real ncu."""
+    import sys
+
+    from kernelforge.profiling import nsight
+
+    if not nsight.ncu_available():
+        pytest.skip("Nsight Compute (ncu) is not on PATH")
+    script = "import torch; torch.ones(8, device='cuda').add_(1); torch.cuda.synchronize()"
+    run = nsight.run([sys.executable, "-c", script], sections=("launch",))
+    assert run.ok, run.stderr
+    assert run.metrics, run.stdout
+
+
 def test_profile_reports_a_missing_ncu(capsys, monkeypatch):
     from kernelforge.profiling import nsight
 
