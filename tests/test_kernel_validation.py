@@ -87,6 +87,12 @@ def test_fused_linear_rejects_a_mismatched_bias():
         fused_linear_gelu(torch.zeros(4, 8), torch.zeros(8, 16), torch.zeros(8))
 
 
+def test_fused_linear_rejects_a_strided_bias():
+    """The kernel reads ``bias_ptr + offs_n``, so a strided bias is read wrongly."""
+    with pytest.raises(ValueError, match="bias must be contiguous"):
+        fused_linear_gelu(torch.zeros(4, 8), torch.zeros(8, 16), torch.ones(32)[::2])
+
+
 def test_vector_add_rejects_mismatched_inputs():
     a = torch.zeros(8)
     with pytest.raises(ValueError, match="shape mismatch"):
