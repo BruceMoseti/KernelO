@@ -20,7 +20,8 @@ carries:
 | dtype, tensor shapes, kernel configuration | the problem and config descriptors |
 | warmup count, iteration count, timer, L2-flush flag | the harness |
 
-`kernelforge env` prints the same snapshot. A latency without this context is
+`kernelforge env` prints the same snapshot, and `benchmark()` returns it with
+every `TimingResult` (`.environment`). A latency without this context is
 not comparable to anything, which is why it is attached at the row level rather
 than written in a commit message.
 

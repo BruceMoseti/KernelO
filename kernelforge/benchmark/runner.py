@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
-from kernelforge.runtime.env import device_caps
+from kernelforge.runtime.env import Environment, capture_environment, device_caps
 
 DEFAULT_WARMUP = 25
 DEFAULT_ITERATIONS = 200
@@ -56,6 +56,7 @@ class TimingResult:
     timer: str
     flushed_l2: bool
     samples_ms: tuple[float, ...] = field(default=(), repr=False)
+    environment: Environment | None = field(default=None, repr=False)
 
     @property
     def at_timer_resolution(self) -> bool:
@@ -89,6 +90,7 @@ def summarize(
     timer: str,
     flushed_l2: bool,
     keep_samples: bool = False,
+    environment: Environment | None = None,
 ) -> TimingResult:
     """Summarise raw per-iteration timings.
 
@@ -113,6 +115,7 @@ def summarize(
         timer=timer,
         flushed_l2=flushed_l2,
         samples_ms=tuple(float(x) for x in arr) if keep_samples else (),
+        environment=environment,
     )
 
 
@@ -130,6 +133,9 @@ def benchmark(
     keep_samples: bool = False,
 ) -> TimingResult:
     """Time ``fn`` and return the latency distribution.
+
+    The result carries the hardware and software snapshot it was measured in
+    (``TimingResult.environment``), captured after the timed loop.
 
     ``fn`` takes no arguments; bind inputs with a lambda or ``functools.partial``
     so that argument marshalling is outside the measured region.
@@ -163,6 +169,7 @@ def benchmark(
             timer="perf_counter",
             flushed_l2=False,
             keep_samples=keep_samples,
+            environment=capture_environment(resolved),
         )
 
     cuda_device = resolved if resolved is not None else torch.device("cuda")
@@ -188,6 +195,7 @@ def benchmark(
         timer="cuda_event",
         flushed_l2=flush_l2,
         keep_samples=keep_samples,
+        environment=capture_environment(cuda_device),
     )
 
 
