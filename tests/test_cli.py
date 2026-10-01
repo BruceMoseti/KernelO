@@ -186,6 +186,49 @@ def test_profile_reports_a_missing_ncu(capsys, monkeypatch):
     assert "ncu not found" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    "operation,kernel",
+    [
+        ("matmul", "matmul_kernel"),
+        ("fused_linear", "fused_linear_gelu_kernel"),
+        ("rmsnorm", "rmsnorm_kernel"),
+        ("softmax", "softmax_kernel"),
+        ("vector_add", "vector_add_kernel"),
+    ],
+)
+def test_nsight_profiles_the_kernelforge_kernel(operation, kernel, monkeypatch):
+    """``--launch-count 1`` has to select the KernelForge launch.
+
+    The profiled process builds its inputs with ``torch.randn`` before it
+    launches the kernel, and ncu counts only the launches that match its kernel
+    filter. With no filter, the counters printed were the RNG kernel's.
+    """
+    import importlib
+    import subprocess
+
+    from kernelforge.profiling import nsight
+
+    pytest.importorskip("triton")
+    # Triton names the compiled kernel after the decorated function.
+    module = importlib.import_module(f"kernelforge.kernels.{operation}")
+    assert getattr(module, kernel).fn.__name__ == kernel
+
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(nsight, "ncu_available", lambda: True)
+    monkeypatch.setattr(nsight.subprocess, "run", fake_run)
+    assert main(["profile", operation, "--backend", "nsight", "--no-cache"]) == 0
+
+    (command,) = commands
+    assert "--kernel-name" in command
+    assert command[command.index("--kernel-name") + 1] == kernel
+    assert command[command.index("--launch-count") + 1] == "1"
+
+
 @pytest.mark.gpu
 def test_compare_runs_end_to_end(capsys):
     assert (
@@ -239,3 +282,23 @@ def test_tune_runs_end_to_end_and_writes_both_stores(capsys, tmp_path):
     assert "passed correctness" in out
     assert "Best configuration" in out
     assert db_path.exists() and cache_path.exists()
+
+
+@pytest.mark.gpu
+def test_nsight_counters_come_from_the_kernelforge_kernel(monkeypatch):
+    from kernelforge.profiling import nsight
+
+    if not nsight.ncu_available():
+        pytest.skip("Nsight Compute (ncu) is not on PATH")
+    runs = []
+    real_run = nsight.run
+
+    def recording_run(*args, **kwargs):
+        runs.append(real_run(*args, **kwargs))
+        return runs[-1]
+
+    monkeypatch.setattr(nsight, "run", recording_run)
+    shape = ["-m", "256", "-n", "256", "-k", "256"]
+    assert main(["profile", "matmul", *shape, "--backend", "nsight", "--no-cache"]) == 0
+    (run,) = runs
+    assert "matmul_kernel" in run.stdout

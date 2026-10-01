@@ -394,6 +394,18 @@ def _compare_transformer(args: argparse.Namespace) -> int:
 
 
 # --- profile -------------------------------------------------------------
+#: The Triton kernel each operation launches. ``ncu`` is told to profile it by
+#: name because the profiled process launches PyTorch's RNG kernels first, to
+#: build its inputs.
+_KERNEL_NAMES = {
+    "matmul": "matmul_kernel",
+    "fused_linear": "fused_linear_gelu_kernel",
+    "rmsnorm": "rmsnorm_kernel",
+    "softmax": "softmax_kernel",
+    "vector_add": "vector_add_kernel",
+}
+
+
 def nsight_child_argv(args: argparse.Namespace) -> list[str]:
     """CLI arguments for the single-launch process that ``ncu`` profiles.
 
@@ -435,6 +447,7 @@ def command_profile(args: argparse.Namespace) -> int:
         run = nsight.run(
             nsight.self_command(nsight_child_argv(args)),
             sections=tuple(args.sections),
+            kernel_filter=_KERNEL_NAMES[args.operation],
             report_path=args.report,
             launch_count=1,
         )
