@@ -13,6 +13,8 @@ model, and it is what the memory analysis in the case studies examines.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 
 def matmul_flops(m: int, n: int, k: int) -> int:
     """``2*M*N*K``: one multiply and one add per inner-product term."""
@@ -86,3 +88,46 @@ def speedup(baseline_ms: float, candidate_ms: float) -> float:
     if candidate_ms <= 0:
         raise ValueError(f"latency must be positive, got {candidate_ms}")
     return baseline_ms / candidate_ms
+
+
+@dataclass(frozen=True)
+class PublishedPeak:
+    """NVIDIA's published dense peak rates for one GPU, at boost clock.
+
+    Spec-sheet figures, not measurements. A measured TFLOP/s or GB/s divided by
+    one of them is the hardware utilisation, and no kernel reaches 100%.
+    """
+
+    #: FP16 and BF16 Tensor Core math with FP32 accumulate, which is what
+    #: ``tl.dot`` does here. GeForce cards run it at half their FP16-accumulate
+    #: rate, so that figure would overstate the roof.
+    tensor_tflops: float
+    #: Without Tensor Cores: the kernels pin fp32 ``tl.dot`` to IEEE, not TF32.
+    fp32_tflops: float
+    dram_gbps: float
+    source: str
+
+    def rate(self, dtype: str, *, memory_bound: bool) -> float:
+        """The roof that a kernel's GB/s, or TFLOP/s, is a fraction of."""
+        if memory_bound:
+            return self.dram_gbps
+        return self.fp32_tflops if dtype == "fp32" else self.tensor_tflops
+
+
+_A100_DATASHEET = (
+    "https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/"
+    "nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf"
+)
+_ADA_WHITEPAPER = (
+    "https://images.nvidia.com/aem-dam/Solutions/geforce/ada/nvidia-ada-gpu-architecture.pdf"
+)
+
+#: Keyed by the device name CUDA reports. A GPU missing here gets no
+#: utilisation figure rather than an estimated one.
+PUBLISHED_PEAKS: dict[str, PublishedPeak] = {
+    "NVIDIA A100-PCIE-40GB": PublishedPeak(312.0, 19.5, 1555.0, _A100_DATASHEET),
+    "NVIDIA A100 80GB PCIe": PublishedPeak(312.0, 19.5, 1935.0, _A100_DATASHEET),
+    "NVIDIA A100-SXM4-40GB": PublishedPeak(312.0, 19.5, 1555.0, _A100_DATASHEET),
+    "NVIDIA A100-SXM4-80GB": PublishedPeak(312.0, 19.5, 2039.0, _A100_DATASHEET),
+    "NVIDIA GeForce RTX 4090": PublishedPeak(165.2, 82.6, 1008.0, _ADA_WHITEPAPER),
+}

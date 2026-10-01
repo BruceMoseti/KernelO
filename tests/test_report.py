@@ -11,7 +11,7 @@ import dataclasses
 
 import pytest
 
-from kernelforge.benchmark import report
+from kernelforge.benchmark import metrics, report
 from kernelforge.benchmark.runner import summarize
 from kernelforge.db import Measurement, ResultsDB
 from kernelforge.runtime.env import capture_environment
@@ -280,6 +280,69 @@ def test_runs_in_one_environment_are_compared(tmp_path):
             )
         artifacts = report.generate(db, tmp_path / "reports")
     assert "2.00x" in artifacts.summary.read_text()
+
+
+@pytest.mark.parametrize(
+    "operation,dtype,dims,throughput",
+    [
+        ("matmul", "fp16", {"M": 4096, "N": 4096, "K": 4096}, {"tflops": 156.0}),
+        ("matmul", "fp32", {"M": 4096, "N": 4096, "K": 4096}, {"tflops": 9.75}),
+        ("rmsnorm", "fp16", {"rows": 4096, "cols": 4096}, {"gbps": 1019.5}),
+    ],
+)
+def test_throughput_is_a_fraction_of_the_published_peak(
+    operation, dtype, dims, throughput, tmp_path
+):
+    """Half of each roof on the A100-SXM4-80GB datasheet: 312 and 19.5 TFLOP/s, 2039 GB/s.
+
+    fp32 is held against the FP32 roof rather than TF32's, because the kernels
+    pin fp32 ``tl.dot`` to IEEE.
+    """
+    a100 = dataclasses.replace(
+        capture_environment(), gpu_name="NVIDIA A100-SXM4-80GB", gpu_arch="8.0"
+    )
+    with ResultsDB(tmp_path / "results.db") as db:
+        db.record(
+            db.start_run(a100),
+            Problem.create(operation, dtype, **dims),
+            Measurement(
+                label="kernelforge",
+                status="ok",
+                verification=ok(),
+                timing=timing(1.0),
+                **throughput,
+            ),
+        )
+        artifacts = report.generate(db, tmp_path / "reports")
+    text = artifacts.summary.read_text()
+    assert "| 50.0% |" in text
+    assert metrics.PUBLISHED_PEAKS["NVIDIA A100-SXM4-80GB"].source in text
+
+
+def test_a_gpu_without_a_published_peak_gets_no_utilisation_figure(tmp_path):
+    """An unknown roof is left blank, never estimated."""
+    unknown = dataclasses.replace(capture_environment(), gpu_name="NVIDIA Unlisted GPU")
+    with ResultsDB(tmp_path / "results.db") as db:
+        db.record(
+            db.start_run(unknown),
+            Problem.create("matmul", "fp16", M=512, N=512, K=512),
+            Measurement(
+                label="kernelforge",
+                status="ok",
+                verification=ok(),
+                timing=timing(1.0),
+                tflops=100.0,
+            ),
+        )
+        artifacts = report.generate(db, tmp_path / "reports")
+    text = artifacts.summary.read_text()
+    assert "| 100.0 | - | - |" in text
+    assert "No published peak on file for NVIDIA Unlisted GPU" in text
+
+
+def test_every_published_peak_cites_an_nvidia_document():
+    for gpu, peak in metrics.PUBLISHED_PEAKS.items():
+        assert peak.source.startswith("https://") and "nvidia.com/" in peak.source, gpu
 
 
 def test_provenance_comes_from_the_latest_run_not_the_latest_result(tmp_path):
