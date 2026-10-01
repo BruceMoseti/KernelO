@@ -129,6 +129,8 @@ def fused_linear_gelu(
         raise ValueError(f"shape mismatch: {tuple(x.shape)} @ {tuple(w.shape)}")
     if bias.shape != (w.shape[1],):
         raise ValueError(f"bias must have shape ({w.shape[1]},), got {tuple(bias.shape)}")
+    if bias.stride(0) != 1:
+        raise ValueError("bias must be contiguous")
     if not (x.dtype == w.dtype == bias.dtype):
         raise ValueError(f"dtype mismatch: {x.dtype}, {w.dtype}, {bias.dtype}")
 
