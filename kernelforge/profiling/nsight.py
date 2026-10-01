@@ -41,6 +41,10 @@ SECTIONS: dict[str, str] = {
 
 DEFAULT_SECTIONS = ("launch", "occupancy", "throughput", "memory", "stalls")
 
+#: Bytes read from and written to DRAM, summed over a run's launches so that a
+#: fused kernel and the several kernels of an unfused sequence compare directly.
+DRAM_METRICS = ("dram__bytes_read.sum", "dram__bytes_write.sum")
+
 
 def ncu_available() -> bool:
     return shutil.which("ncu") is not None
@@ -59,6 +63,11 @@ class NsightRun:
     def ok(self) -> bool:
         return self.returncode == 0
 
+    def total(self, metric: str) -> float | None:
+        """``metric`` summed over the profiled launches, in its base unit."""
+        values = [launch[metric].split()[0] for launch in self.metrics.values() if metric in launch]
+        return sum(float(value.replace(",", "")) for value in values) if values else None
+
     def render(self) -> str:
         lines = [f"$ {' '.join(self.command)}"]
         if not self.ok:
@@ -71,6 +80,12 @@ class NsightRun:
                 lines.append(f"\n{kernel}")
                 width = max(len(k) for k in values)
                 lines.extend(f"  {k:<{width}}  {v}" for k, v in values.items())
+            read, written = (self.total(metric) for metric in DRAM_METRICS)
+            if read is not None and written is not None:
+                lines.append(
+                    f"\nDRAM over {len(self.metrics)} launch(es): {read / 2**20:.1f} MiB read, "
+                    f"{written / 2**20:.1f} MiB written"
+                )
         else:
             lines.append(self.stdout.strip())
         if self.report_path is not None:
@@ -82,13 +97,20 @@ def build_command(
     target: list[str],
     *,
     sections: tuple[str, ...] = DEFAULT_SECTIONS,
+    metrics: tuple[str, ...] = (),
     kernel_filter: str | None = None,
-    launch_count: int = 1,
+    profile_from_start: bool = True,
+    launch_count: int | None = 1,
     launch_skip: int = 0,
     report_path: str | Path | None = None,
     csv: bool = True,
 ) -> list[str]:
-    """Assemble the ``ncu`` command line that profiles ``target``."""
+    """Assemble the ``ncu`` command line that profiles ``target``.
+
+    With ``profile_from_start=False``, ncu profiles only the launches between
+    the target's ``cudaProfilerStart`` and ``cudaProfilerStop``. A
+    ``launch_count`` of None profiles every launch that is selected.
+    """
     unknown = sorted(set(sections) - set(SECTIONS))
     if unknown:
         raise ValueError(f"unknown sections {unknown}; available: {sorted(SECTIONS)}")
@@ -96,9 +118,15 @@ def build_command(
     command = ["ncu", "--target-processes", "all"]
     for name in sections:
         command += ["--section", SECTIONS[name]]
+    if metrics:
+        command += ["--metrics", ",".join(metrics)]
     if kernel_filter:
         command += ["--kernel-name", kernel_filter]
-    command += ["--launch-count", str(launch_count), "--launch-skip", str(launch_skip)]
+    if not profile_from_start:
+        command += ["--profile-from-start", "off"]
+    if launch_count is not None:
+        command += ["--launch-count", str(launch_count)]
+    command += ["--launch-skip", str(launch_skip)]
     if report_path is not None:
         command += ["--export", str(report_path), "--force-overwrite"]
     if csv:
@@ -162,8 +190,10 @@ def run(
     target: list[str],
     *,
     sections: tuple[str, ...] = DEFAULT_SECTIONS,
+    metrics: tuple[str, ...] = (),
     kernel_filter: str | None = None,
-    launch_count: int = 1,
+    profile_from_start: bool = True,
+    launch_count: int | None = 1,
     launch_skip: int = 0,
     report_path: str | Path | None = None,
     timeout: float = 900.0,
@@ -176,7 +206,9 @@ def run(
     command = build_command(
         target,
         sections=sections,
+        metrics=metrics,
         kernel_filter=kernel_filter,
+        profile_from_start=profile_from_start,
         launch_count=launch_count,
         launch_skip=launch_skip,
         report_path=report_path,

@@ -394,26 +394,14 @@ def _compare_transformer(args: argparse.Namespace) -> int:
 
 
 # --- profile -------------------------------------------------------------
-#: The Triton kernel each operation launches. ``ncu`` is told to profile it by
-#: name because the profiled process launches PyTorch's RNG kernels first, to
-#: build its inputs.
-_KERNEL_NAMES = {
-    "matmul": "matmul_kernel",
-    "fused_linear": "fused_linear_gelu_kernel",
-    "rmsnorm": "rmsnorm_kernel",
-    "softmax": "softmax_kernel",
-    "vector_add": "vector_add_kernel",
-}
-
-
 def nsight_child_argv(args: argparse.Namespace) -> list[str]:
-    """CLI arguments for the single-launch process that ``ncu`` profiles.
+    """CLI arguments for the process that ``ncu`` profiles: one call of one implementation.
 
     Rebuilt from the parsed arguments rather than sliced out of ``sys.argv``:
     slicing drops any shape flag written after ``--backend``, which would
     silently profile the default shape instead of the requested one. The cache
     is passed through so the child picks the same configuration the parent
-    would, and the database is switched off because one serialised launch under
+    would, and the database is switched off because one serialised call under
     a profiler is not a measurement worth recording.
     """
     argv = ["profile", args.operation, "--dtype", args.dtype]
@@ -431,7 +419,7 @@ def nsight_child_argv(args: argparse.Namespace) -> list[str]:
         argv.append("--no-cache")
     else:
         argv += ["--cache", args.cache]
-    return argv + ["--no-db", "--backend", "launch-once"]
+    return argv + ["--impl", args.impl, "--no-db", "--backend", "launch-once"]
 
 
 def command_profile(args: argparse.Namespace) -> int:
@@ -447,9 +435,10 @@ def command_profile(args: argparse.Namespace) -> int:
         run = nsight.run(
             nsight.self_command(nsight_child_argv(args)),
             sections=tuple(args.sections),
-            kernel_filter=_KERNEL_NAMES[args.operation],
+            metrics=nsight.DRAM_METRICS,
+            profile_from_start=False,
+            launch_count=None,
             report_path=args.report,
-            launch_count=1,
         )
         print(run.render())
         return 0 if run.ok else 1
@@ -465,10 +454,27 @@ def command_profile(args: argparse.Namespace) -> int:
     selection = select_config(operator, problem, cache=_open_cache(args), device=device)
 
     if args.backend == "launch-once":
+        import functools
+
         import torch
 
-        operator.run(selection.config, *inputs)
+        if args.impl == "kernelforge":
+            call = functools.partial(operator.run, selection.config, *inputs)
+        else:
+            baselines = operator.baselines(problem, inputs)
+            if args.impl not in baselines:
+                raise ValueError(
+                    f"{args.operation} has no {args.impl!r} implementation; "
+                    f"available: kernelforge, {', '.join(baselines)}"
+                )
+            call = baselines[args.impl]
+        # The first call compiles and initialises outside the profiled range,
+        # so the range holds every kernel of exactly one call and nothing else.
+        call()
         torch.cuda.synchronize()
+        with torch.cuda.profiler.profile():
+            call()
+            torch.cuda.synchronize()
         return 0
 
     from kernelforge.profiling import compare_launch_counts
@@ -606,7 +612,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="torch",
         choices=("torch", "nsight", "launch-once"),
         help="torch: kernel attribution; nsight: hardware counters via ncu; "
-        "launch-once: single launch, used as the ncu target",
+        "launch-once: one profiled call, used as the ncu target",
+    )
+    profile.add_argument(
+        "--impl",
+        default="kernelforge",
+        help="nsight: implementation whose kernels to profile, all of them for one call; "
+        "a baseline label such as torch_eager selects the unfused PyTorch sequence",
     )
     profile.add_argument(
         "--sections",

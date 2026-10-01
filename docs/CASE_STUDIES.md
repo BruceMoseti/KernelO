@@ -240,7 +240,14 @@ fused kernel side by side.
 ```bash
 kernelforge profile fused_linear --m 4096 --n 11008 --k 4096 --backend nsight \
     --sections memory throughput launch
+kernelforge profile fused_linear --m 4096 --n 11008 --k 4096 --backend nsight \
+    --impl torch_eager --sections memory
 ```
+
+Each command profiles every kernel of one call: the fused kernel alone, or with
+`--impl torch_eager` the unfused GEMM, bias add and GELU (`--impl torch_compile`
+works the same way). Each ends with that call's DRAM bytes read and written,
+summed over its kernels.
 
 | Nsight section | What to read |
 | --- | --- |
