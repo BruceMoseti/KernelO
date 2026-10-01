@@ -46,7 +46,7 @@ def test_default_config_across_awkward_shapes(shape, dtype, device):
     rows, cols = shape
     x, gamma = inputs(rows, cols, dtype, device)
     assert_verified(
-        rmsnorm_reference(x, gamma),
+        rmsnorm_reference(x.double(), gamma.double()),
         rmsnorm(x, gamma, config=default_config(cols)),
         dtype=dtype,
         context=f"rmsnorm {rows}x{cols} {dtype}",
@@ -69,7 +69,7 @@ def test_rows_per_program_with_an_indivisible_row_count(rows_per_program, rows, 
         num_warps=4,
     )
     assert_verified(
-        rmsnorm_reference(x, gamma),
+        rmsnorm_reference(x.double(), gamma.double()),
         rmsnorm(x, gamma, config=config),
         dtype=torch.float16,
         context=f"rmsnorm rows={rows} rpp={rows_per_program}",
@@ -88,7 +88,7 @@ def test_wide_fp16_rows_need_the_fp32_reduction(device):
 
     x, gamma = inputs(64, 8192, torch.float16, device)
     result = assert_verified(
-        rmsnorm_reference(x, gamma),
+        rmsnorm_reference(x.double(), gamma.double()),
         rmsnorm(x, gamma, config=default_config(8192)),
         dtype=torch.float16,
     )
@@ -104,7 +104,8 @@ def test_wide_fp16_rows_need_the_fp32_reduction(device):
     naive_sum = x.pow(2).sum(dim=-1, keepdim=True, dtype=torch.float16)
     naive_rms = torch.rsqrt(naive_sum.to(torch.float32) / x.shape[-1] + 1e-5)
     naive = (x * naive_rms * gamma).to(torch.float16)
-    assert verify(rmsnorm_reference(x, gamma), naive, dtype=torch.float16).error > result.error
+    reference = rmsnorm_reference(x.double(), gamma.double())
+    assert verify(reference, naive, dtype=torch.float16).error > result.error
 
 
 def test_all_zero_row_is_finite(device):
@@ -115,7 +116,7 @@ def test_all_zero_row_is_finite(device):
     gamma = torch.ones(256, device=device, dtype=torch.float16)
     out = rmsnorm(x, gamma, config=default_config(256))
     assert torch.isfinite(out).all()
-    assert_verified(rmsnorm_reference(x, gamma), out, dtype=torch.float16)
+    assert_verified(rmsnorm_reference(x.double(), gamma.double()), out, dtype=torch.float16)
 
 
 def test_every_candidate_agrees_with_the_reference(device):
@@ -126,7 +127,7 @@ def test_every_candidate_agrees_with_the_reference(device):
     rows, cols = 333, 1024
     problem = Problem.create("rmsnorm", "fp16", rows=rows, cols=cols)
     x, gamma = inputs(rows, cols, torch.float16, device)
-    expected = rmsnorm_reference(x, gamma)
+    expected = rmsnorm_reference(x.double(), gamma.double())
     for candidate in RMSNormSearchSpace().candidates(problem, device_caps(device)):
         assert_verified(
             expected,

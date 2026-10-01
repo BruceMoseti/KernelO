@@ -20,7 +20,7 @@ import torch
 import torch.nn.functional as F
 
 from kernelforge.benchmark import workloads
-from kernelforge.testing import assert_verified, exact_fp32_matmul
+from kernelforge.testing import assert_verified
 from kernelforge.tuning.config import KernelConfig, Problem
 
 pytest.importorskip("triton")
@@ -82,8 +82,7 @@ def test_fusion_matches_the_unfused_sequence(shape, dtype, device):
 
     m, n, k = shape
     x, w, bias = inputs(m, k, n, dtype, device)
-    with exact_fp32_matmul():
-        expected = linear_gelu_reference(x, w, bias)
+    expected = linear_gelu_reference(x.double(), w.double(), bias.double())
     assert_verified(
         expected,
         fused_linear_gelu(x, w, bias, config=DEFAULT_CONFIG),
@@ -109,8 +108,7 @@ def test_boundary_masking_across_tile_shapes(tile, shape, device):
 
     m, n, k = shape
     x, w, bias = inputs(m, k, n, torch.float16, device)
-    with exact_fp32_matmul():
-        expected = linear_gelu_reference(x, w, bias)
+    expected = linear_gelu_reference(x.double(), w.double(), bias.double())
     assert_verified(
         expected,
         fused_linear_gelu(x, w, bias, config=config(*tile)),
@@ -175,8 +173,7 @@ def test_transposed_weight_needs_no_copy(device):
     bias = torch.randn(256, device=device, dtype=torch.float16, generator=gen)
     view = weight.t()
     assert not view.is_contiguous()
-    with exact_fp32_matmul():
-        expected = linear_gelu_reference(x, view, bias)
+    expected = linear_gelu_reference(x.double(), view.double(), bias.double())
     assert_verified(expected, fused_linear_gelu(x, view, bias), dtype=torch.float16)
 
 
@@ -188,8 +185,7 @@ def test_every_candidate_agrees_with_the_reference(device):
     m, n, k = 257, 513, 129
     problem = Problem.create("fused_linear", "fp16", M=m, N=n, K=k)
     x, w, bias = inputs(m, k, n, torch.float16, device)
-    with exact_fp32_matmul():
-        expected = linear_gelu_reference(x, w, bias)
+    expected = linear_gelu_reference(x.double(), w.double(), bias.double())
     for candidate in FusedLinearSearchSpace().candidates(problem, device_caps(device)):
         assert_verified(
             expected,

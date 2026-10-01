@@ -18,7 +18,7 @@ import pytest
 import torch
 
 from kernelforge.benchmark import workloads
-from kernelforge.testing import assert_verified, exact_fp32_matmul
+from kernelforge.testing import assert_verified
 from kernelforge.tuning.config import KernelConfig, Problem
 
 pytest.importorskip("triton")
@@ -79,8 +79,8 @@ def operands(m, k, n, dtype, device, seed=0):
 
 
 def reference(a, b):
-    with exact_fp32_matmul():
-        return torch.matmul(a, b)
+    """float64 from the same inputs: exact, so the gate checks every element."""
+    return torch.matmul(a.double(), b.double())
 
 
 @pytest.mark.parametrize("shape", CORRECTNESS_SHAPES)
