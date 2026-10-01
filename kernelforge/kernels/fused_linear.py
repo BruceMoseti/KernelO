@@ -10,7 +10,7 @@ Three kernel launches and 5*M*N elements of traffic through the output. The
 epilogue arithmetic is trivial -- a few FLOPs per element -- so every one of
 those extra passes is pure bandwidth cost. Folding the bias and the activation
 into the GEMM's epilogue, while the tile is still in registers, leaves one
-launch and M*N of output traffic. For M=4096, N=11008 in fp16 that is 360 MiB
+launch and M*N of output traffic. For M=4096, N=11008 in fp16 that is 344 MiB
 of avoided round trips.
 
 **GELU form.** This is the tanh approximation, which is what transformer

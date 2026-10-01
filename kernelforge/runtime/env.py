@@ -102,6 +102,19 @@ def device_caps(device: torch.device | str | int | None = None) -> DeviceCaps:
     )
 
 
+def device_key(device: torch.device | str | int | None = None) -> str:
+    """The cache key for the attached device, or ``"cpu"`` when there is none.
+
+    The single derivation used by both the recorded environment and the
+    dispatch-time cache lookup. Deriving it twice let them disagree on a
+    CPU-only host, where `device_caps` returns documented A100 fallback values
+    whose key would have claimed hardware that is not present.
+    """
+    if not torch.cuda.is_available():
+        return "cpu"
+    return device_caps(device).key
+
+
 def _triton_version() -> str | None:
     try:
         import triton
@@ -189,7 +202,7 @@ def capture_environment(device: torch.device | str | int | None = None) -> Envir
         gpu_arch=caps.compute_capability if caps else None,
         gpu_memory_bytes=caps.total_memory_bytes if caps else None,
         sm_count=caps.sm_count if caps else None,
-        device_key=caps.key if caps else "cpu",
+        device_key=device_key(device),
     )
 
 

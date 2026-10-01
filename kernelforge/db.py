@@ -102,7 +102,7 @@ _ROWS_QUERY = """
 SELECT
     r.result_id, r.label, r.status, r.correct, r.rel_error,
     r.median_us, r.mean_us, r.std_us, r.min_us, r.max_us, r.p95_us, r.p99_us,
-    r.warmup, r.iterations, r.timer, r.tflops, r.gbps, r.error,
+    r.warmup, r.iterations, r.timer, r.flushed_l2, r.tflops, r.gbps, r.error,
     p.operation, p.shape_key, p.dtype, p.dims_json,
     c.params_json, c.digest,
     run.run_id, run.timestamp, run.gpu_name, run.gpu_arch, run.device_key,
@@ -296,6 +296,16 @@ class ResultsDB:
         return sorted(
             best.values(), key=lambda r: (r["operation"], r["dtype"], r["shape_key"], r["label"])
         )
+
+    def runs(self) -> list[dict]:
+        """Every recorded run, oldest first.
+
+        Distinct from :meth:`rows`, which returns *results* joined to their
+        run: a run that recorded nothing still happened, and the provenance
+        table in a report should reflect the latest run rather than the latest
+        run that happened to produce a measurement.
+        """
+        return [dict(row) for row in self._conn.execute("SELECT * FROM runs ORDER BY run_id")]
 
     def counts(self) -> dict[str, int]:
         tables = ("runs", "problems", "configs", "results")

@@ -42,7 +42,7 @@ tests — and a surprising amount of that is verified without a GPU at all:
 | An incorrect configuration is never ranked | the tuner driven end to end on a CPU operator whose configs fail in each real way |
 | Search-space filters are device-specific | a tile feasible on an A100 is rejected for an RTX 4090, both without the hardware |
 
-On a CPU-only machine, `pytest -m "not gpu"` gives **167 passed, 1 skipped**.
+On a CPU-only machine, `pytest -m "not gpu"` gives **187 passed, 1 skipped**.
 A further **292** tests need a CUDA device and skip with a stated reason
 rather than failing, so the same suite runs in ordinary CI and on a GPU runner.
 
@@ -175,11 +175,11 @@ transfer across GPUs:
 | Rule | Reasoning |
 | --- | --- |
 | Shared memory | `num_stages * BLOCK_K * (BLOCK_M + BLOCK_N) * itemsize` must fit the per-block opt-in limit |
-| Register pressure | `BLOCK_M*BLOCK_N / threads` fp32 accumulators per thread, against the 255 a thread can address |
+| Register pressure | `BLOCK_M*BLOCK_N / threads` fp32 accumulators per thread, capped at 128 — well under the 255 a thread can address, since the accumulator is only part of its register demand |
 | Coalescing | a tile row shorter than 64 B wastes most of every 128 B transaction it touches, since successive rows are strided |
-| Tile overshoot | a tile more than twice the problem dimension computes masked-off work |
+| Tile overshoot | a tile more than twice the problem dimension computes masked-off work, unless it is already the smallest in the grid |
 | Pipeline depth | `num_stages > 2` needs at least that many K iterations to overlap |
-| Parallelism | a launch grid below the SM count leaves multiprocessors idle — applied only when some tiling can fill the GPU |
+| Parallelism | a launch grid under half the SM count leaves multiprocessors idle — applied only when some tiling can fill the GPU |
 
 Survivors are sorted by a documented priority and truncated to a budget
 (default 48). The budget bounds tuning cost without tightening the rules to the

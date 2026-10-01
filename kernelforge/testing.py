@@ -115,8 +115,11 @@ def verify(
     # An all-zero reference is a degenerate but legitimate case (e.g. a zero
     # bias); fall back to the absolute error so the division stays meaningful.
     error = max_abs_err / scale if scale > 0 else max_abs_err
-    mismatched = int((diff > limit * max(scale, 1.0)).sum())
     passed = error <= limit
+    # The element count is measured against the same bound as the verdict, so
+    # a failing comparison can never report that nothing differs.
+    budget = limit * scale if scale > 0 else limit
+    mismatched = int((diff > budget).sum())
 
     return VerificationResult(
         passed=passed,

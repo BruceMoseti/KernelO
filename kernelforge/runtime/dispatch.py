@@ -20,7 +20,7 @@ from dataclasses import dataclass
 import torch
 
 from kernelforge.kernels.base import Operator
-from kernelforge.runtime.env import device_caps
+from kernelforge.runtime.env import device_key as resolve_device_key
 from kernelforge.tuning.cache import ConfigCache
 from kernelforge.tuning.config import KernelConfig, Problem
 
@@ -52,7 +52,7 @@ def select_config(
     device: torch.device | str | None = None,
 ) -> Selection:
     """Pick the configuration to run ``problem`` with."""
-    device_key = device_caps(device).key
+    device_key = resolve_device_key(device)
     resolved = cache if cache is not None else ConfigCache()
     cached = resolved.get(problem, device_key)
     if cached is not None:

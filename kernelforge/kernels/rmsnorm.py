@@ -85,9 +85,17 @@ def rmsnorm(
 ) -> torch.Tensor:
     if x.ndim != 2:
         raise ValueError(f"expected a 2D tensor, got shape {tuple(x.shape)}")
+    if x.stride(1) != 1:
+        raise ValueError(
+            "x must have a contiguous last dimension; this kernel indexes columns "
+            "directly off the row pointer. Pass x.contiguous() -- explicitly, so the "
+            "copy is not hidden inside a measured region."
+        )
     n_rows, n_cols = x.shape
     if gamma.shape != (n_cols,):
         raise ValueError(f"gamma must have shape ({n_cols},), got {tuple(gamma.shape)}")
+    if gamma.stride(0) != 1:
+        raise ValueError("gamma must be contiguous")
     cfg = config or default_config(n_cols)
     block = cfg["BLOCK_SIZE"]
     if block < n_cols:

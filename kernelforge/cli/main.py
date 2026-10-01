@@ -166,7 +166,10 @@ def command_tune(args: argparse.Namespace) -> int:
     if args.explain:
         from kernelforge.runtime.env import device_caps
 
-        print(search_space(args.operation).explain(problem, device_caps()))
+        space = search_space(args.operation)
+        if args.max_candidates is not None:
+            space.max_candidates = args.max_candidates
+        print(space.explain(problem, device_caps()))
         return 0
 
     operator = get_operator(args.operation)

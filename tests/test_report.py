@@ -135,6 +135,13 @@ def test_report_writes_summary_tables_and_figures(seeded_db, tmp_path):
         assert path.stat().st_size > 1000, f"{path.name} looks empty"
 
 
+def test_summary_rows_are_ordered_by_problem_size(seeded_db, tmp_path):
+    """Not by the shape string, which would sort 512x512x512 after 2048x4096x4096."""
+    report.generate(seeded_db, tmp_path / "reports")
+    text = (tmp_path / "reports" / "summary.md").read_text()
+    assert text.index("| 1024x1024x1024 ") < text.index("| 2048x4096x4096 ")
+
+
 def test_summary_contains_provenance_and_speedups(seeded_db, tmp_path):
     report.generate(seeded_db, tmp_path / "reports")
     text = (tmp_path / "reports" / "summary.md").read_text()
@@ -154,6 +161,74 @@ def test_memory_bound_operators_get_a_bandwidth_figure(seeded_db, tmp_path):
     names = {p.name for p in artifacts.figures}
     assert "rmsnorm_bandwidth.png" in names
     assert "rmsnorm_tflops.png" not in names
+
+
+def test_two_dtypes_at_one_shape_render_as_separate_series(tmp_path):
+    """A shape alone is not a unique series.
+
+    The same shape measured in fp16 and bf16 used to collapse onto one x-axis
+    label, handing matplotlib a two-element Series where it expects a scalar.
+    Both the CI workflow and the experiment script take a dtype parameter and
+    write the same database, so this is an ordinary path.
+    """
+    with ResultsDB(tmp_path / "results.db") as db:
+        run_id = db.start_run(capture_environment())
+        for dtype, ms in (("fp16", 1.0), ("bf16", 1.2)):
+            problem = Problem.create("matmul", dtype, M=1024, N=1024, K=1024)
+            for label, value in (("torch_eager", ms), ("kernelforge", ms * 0.9)):
+                db.record(
+                    run_id,
+                    problem,
+                    Measurement(
+                        label=label,
+                        status="ok",
+                        verification=ok(),
+                        timing=timing(value),
+                        tflops=1.0,
+                    ),
+                )
+        artifacts = report.generate(db, tmp_path / "reports")
+
+    text = artifacts.summary.read_text()
+    assert "fp16" in text and "bf16" in text
+    figure = next(p for p in artifacts.figures if p.name == "matmul_latency.png")
+    assert figure.stat().st_size > 1000
+
+
+def test_mixing_flushed_and_unflushed_timings_is_reported(tmp_path):
+    """The two are not comparable, so the report must not stay quiet about it."""
+    with ResultsDB(tmp_path / "results.db") as db:
+        run_id = db.start_run(capture_environment())
+        problem = Problem.create("matmul", "fp16", M=512, N=512, K=512)
+        for label, flushed in (("torch_eager", True), ("kernelforge", False)):
+            db.record(
+                run_id,
+                problem,
+                Measurement(
+                    label=label,
+                    status="ok",
+                    verification=ok(),
+                    timing=summarize(
+                        [1.0],
+                        warmup=25,
+                        iterations=1,
+                        timer="cuda_event",
+                        flushed_l2=flushed,
+                    ),
+                ),
+            )
+        artifacts = report.generate(db, tmp_path / "reports")
+    assert any("unflushed" in note for note in artifacts.notes)
+    assert "Warning" in artifacts.summary.read_text()
+
+
+def test_provenance_comes_from_the_latest_run_not_the_latest_result(tmp_path):
+    """A run that recorded nothing still happened."""
+    with ResultsDB(tmp_path / "results.db") as db:
+        db.start_run(capture_environment(), notes="empty run")
+        assert db.runs()
+        artifacts = report.generate(db, tmp_path / "reports")
+        assert "No runs recorded." not in artifacts.summary.read_text()
 
 
 def test_empty_database_produces_a_report_that_says_so(tmp_path):

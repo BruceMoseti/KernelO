@@ -70,8 +70,12 @@ def test_shared_memory_model_matches_the_pipeliner(device):
     can.
 
     Allowed to come out lower than the estimate: Triton may decide a loop is
-    not worth pipelining. Coming out *higher* would mean the filter is
-    admitting configurations the device cannot run.
+    not worth pipelining. Allowed a 25% overshoot too, because the operand
+    layout is padded for swizzling -- the CPU compile test measures that
+    padding directly and sees up to 2x on the single-buffer footprint. Beyond
+    that margin the filter would be admitting configurations whose real
+    shared-memory demand it has underestimated, which costs tuning time in
+    OutOfResources failures.
     """
     from kernelforge.tuning.search import MatmulSearchSpace
 

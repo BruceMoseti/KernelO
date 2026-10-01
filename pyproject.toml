@@ -34,7 +34,7 @@ kernelforge = "kernelforge.cli.main:main"
 include = ["kernelforge*"]
 
 [tool.setuptools.package-data]
-kernelforge = ["csrc/*.cu", "csrc/*.cpp"]
+kernelforge = ["csrc/*.cu", "csrc/*.cuh", "csrc/*.cpp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

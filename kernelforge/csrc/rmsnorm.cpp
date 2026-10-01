@@ -20,6 +20,14 @@ at::Tensor rmsnorm_forward(const at::Tensor& x, const at::Tensor& gamma, double 
   TORCH_CHECK(
       x.scalar_type() == gamma.scalar_type(),
       "x and gamma must share a dtype, got ", x.scalar_type(), " and ", gamma.scalar_type());
+  // The kernel accumulates in float and rescales with rsqrtf, so a double
+  // input would be a silent precision downgrade rather than a double-precision
+  // RMSNorm. Refused rather than quietly accepted.
+  TORCH_CHECK(
+      x.scalar_type() == at::ScalarType::Half ||
+          x.scalar_type() == at::ScalarType::BFloat16 ||
+          x.scalar_type() == at::ScalarType::Float,
+      "unsupported dtype ", x.scalar_type(), "; expected Half, BFloat16 or Float");
   TORCH_CHECK(eps > 0.0, "eps must be positive, got ", eps);
   return rmsnorm_forward_cuda(x, gamma, eps);
 }

@@ -21,6 +21,9 @@ import torch
 
 CSRC = Path(__file__).resolve().parent.parent / "csrc"
 SOURCES = (CSRC / "rmsnorm.cu", CSRC / "rmsnorm.cpp")
+#: Not passed to the compiler, but included by rmsnorm.cu, so a wheel that
+#: omitted it would fail at build time rather than at import.
+HEADERS = (CSRC / "rmsnorm_kernel.cuh",)
 EXTENSION_NAME = "kernelforge_rmsnorm_cuda"
 
 _module: Any = None
@@ -41,7 +44,7 @@ def available() -> bool:
     """
     if not torch.cuda.is_available():
         return False
-    if not all(path.exists() for path in SOURCES):
+    if not all(path.exists() for path in (*SOURCES, *HEADERS)):
         return False
     home = cuda_home()
     return bool(home) and Path(home, "bin", "nvcc").exists()

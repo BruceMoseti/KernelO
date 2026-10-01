@@ -148,12 +148,15 @@ class SearchSpace(ABC):
     def _prune_underutilised(
         self, configs: list[KernelConfig], problem: Problem, caps: DeviceCaps
     ) -> tuple[list[KernelConfig], list[tuple[KernelConfig, str]]]:
-        """Drop configurations that cannot fill the GPU -- unless none can.
+        """Drop configurations that cannot fill half the GPU -- unless none can.
 
         A launch grid smaller than the SM count leaves multiprocessors idle for
-        the whole kernel. The rule is conditional because for a small enough
-        problem *no* tiling fills the machine, and in that case the least-bad
-        option still has to be measured.
+        the whole kernel. The floor is half the SM count rather than all of it,
+        because a grid of 0.6 waves can still beat a smaller tile that reaches
+        1.0, and the budget would rather spend a slot measuring it than rule it
+        out. The rule is conditional for a stronger reason: for a small enough
+        problem *no* tiling fills the machine, and the least-bad option still
+        has to be measured.
         """
         try:
             programs = {c: self.num_programs(c, problem) for c in configs}
@@ -164,7 +167,7 @@ class SearchSpace(ABC):
         floor = caps.sm_count // 2
         kept = [c for c in configs if programs[c] >= floor]
         dropped = [
-            (c, f"launch grid of {programs[c]} programs cannot fill {caps.sm_count} SMs")
+            (c, f"launch grid of {programs[c]} programs fills under half of {caps.sm_count} SMs")
             for c in configs
             if programs[c] < floor
         ]
@@ -280,7 +283,7 @@ class _BlockedGemmSpace(SearchSpace):
           the standalone ``triton.compile`` entry point does not run the
           software pipeliner, so its allocation stays at one buffer per operand
           whatever ``num_stages`` says.
-        * ``tests/test_kernels_gpu.py::test_shared_memory_model`` checks the
+        * ``tests/test_kernels_gpu.py::test_shared_memory_model_matches_the_pipeliner`` checks the
           full figure against a real JIT launch, where the pipeliner does run.
 
         The estimate is therefore an upper bound used to reject configurations
@@ -336,9 +339,15 @@ class _BlockedGemmSpace(SearchSpace):
         # A tile larger than the problem computes masked-off work that is
         # thrown away. Allowing one doubling keeps useful tilings for shapes
         # that are just over a tile boundary.
-        if bm > 2 * m:
+        #
+        # The rule only applies while a smaller tile is still available. The
+        # smallest BLOCK_M in the grid is 16, so for a decode-shaped GEMM with
+        # M=1 every tile "overshoots" and an unconditional rule would reject
+        # the entire grid -- which is exactly the shape that dominates
+        # single-stream decoding and most needs tuning.
+        if bm > 2 * m and bm > min(self.BLOCK_M):
             return f"tile overshoot: BLOCK_M={bm} for M={m}"
-        if bn > 2 * n:
+        if bn > 2 * n and bn > min(self.BLOCK_N):
             return f"tile overshoot: BLOCK_N={bn} for N={n}"
 
         k_iters = ceil_div(k, bk)

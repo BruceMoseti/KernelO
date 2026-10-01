@@ -10,7 +10,7 @@ What these tests cannot see: anything that depends on running. The standalone
 compile entry point does not run the software pipeliner, so the shared-memory
 figures here are single-buffer and the ``num_stages`` factor in the search
 space's estimate is checked on a GPU instead -- see
-``tests/test_kernels_gpu.py::test_shared_memory_model``.
+``tests/test_kernels_gpu.py::test_shared_memory_model_matches_the_pipeliner``.
 """
 
 from __future__ import annotations
@@ -196,13 +196,29 @@ def test_every_candidate_in_the_budget_compiles(a100_caps):
 
 
 @pytest.mark.slow
-def test_full_candidate_budget_compiles(a100_caps):
-    """The exhaustive version of the above; slow, so it is opt-in."""
+@pytest.mark.parametrize(
+    "dims",
+    [
+        {"M": 2048, "N": 4096, "K": 4096},
+        # A decode-shaped GEMM selects an entirely different part of the grid:
+        # only BLOCK_M=16 survives the overshoot rule, and the budget never
+        # reaches those tiles for a large shape because they have the least
+        # reuse. Without this case they would go uncompiled.
+        {"M": 1, "N": 11008, "K": 4096},
+    ],
+    ids=["square", "decode"],
+)
+def test_full_candidate_budget_compiles(dims, a100_caps):
+    """Every candidate the tuner would try, exhaustively. Slow, so opt-in."""
     from kernelforge.kernels.matmul import matmul_kernel
     from kernelforge.tuning.search import MatmulSearchSpace
 
-    for config in MatmulSearchSpace().candidates(MATMUL_PROBLEM, a100_caps):
-        _compile_gemm(matmul_kernel, config, "fp16", 80, bias=False)
+    problem = Problem.create("matmul", "fp16", **dims)
+    candidates = MatmulSearchSpace().candidates(problem, a100_caps)
+    assert candidates, f"no candidates for {dims}"
+    for config in candidates:
+        result = _compile_gemm(matmul_kernel, config, "fp16", 80, bias=False)
+        assert result.uses_tensor_cores(), f"{config!r} did not reach the tensor cores"
 
 
 @pytest.mark.parametrize("cols", [128, 1024, 4096, 8192])

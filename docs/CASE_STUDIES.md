@@ -203,7 +203,7 @@ gelu(tmp2) -> y      read M*N, write M*N
 ```
 
 Three launches and `5*M*N` elements of output traffic, against one launch and
-`M*N` fused. For `M=4096`, `N=11008`, fp16, the `4*M*N` difference is 360 MiB
+`M*N` fused. For `M=4096`, `N=11008`, fp16, the `4*M*N` difference is 344 MiB
 of avoided round trips.
 
 So:
@@ -261,7 +261,7 @@ kernelforge profile fused_linear --m 4096 --n 11008 --k 4096 --backend nsight \
 | `torch.compile` | | | | | |
 | KernelForge fused | 1 | | | | |
 
-Predicted output-traffic saving at 4096×11008 fp16: 360 MiB.
+Predicted output-traffic saving at 4096×11008 fp16: `4 × 4096 × 11008 × 2 B` = 344 MiB.
 Measured saving: _(fill in.)_
 
 **Which prediction held, and which did not:** _(to be written from the

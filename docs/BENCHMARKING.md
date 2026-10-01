@@ -77,8 +77,10 @@ iteration.
 
 This makes small problems look slower than a naive harness reports, which is
 the point. `--no-flush-l2` disables it; `TimingResult.flushed_l2` records which
-was used, and the flag is stored with the row, so flushed and unflushed numbers
-cannot be silently mixed.
+was used and the flag is stored with every database row, so `kernelforge
+report` detects a database holding both and prints a warning into
+`summary.md` rather than quietly ranking an unflushed row above a flushed
+one.
 
 The exception is the transformer block, where the working set greatly exceeds
 L2 and flushing adds noise to an already-cold measurement. That is set

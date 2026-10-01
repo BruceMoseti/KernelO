@@ -90,8 +90,10 @@ def test_shared_memory_filter_is_device_specific(a100_caps, rtx4090_caps):
 def test_register_pressure_filter_rejects_oversized_accumulators(a100_caps):
     """A 128x128 tile on 2 warps is 256 fp32 accumulators per thread.
 
-    That exceeds the 255 architectural registers a thread can address, so the
-    accumulator alone would spill to local memory.
+    The rule caps the accumulator at 128, deliberately well under the 255
+    registers a thread can address, because addressing, the software pipeline
+    and the epilogue all need their share. 256 would exceed even the
+    architectural limit, so the accumulator alone would spill to local memory.
     """
     config = gemm_config(BLOCK_M=128, BLOCK_N=128, num_warps=2)
     reason = MatmulSearchSpace().reject_reason(config, GEMM, a100_caps)
@@ -122,6 +124,31 @@ def test_tile_overshoot_filter_rejects_tiles_larger_than_the_problem(a100_caps):
     thin = Problem.create("matmul", "fp16", M=16, N=4096, K=4096)
     reason = MatmulSearchSpace().reject_reason(gemm_config(BLOCK_M=128), thin, a100_caps)
     assert reason is not None and "tile overshoot" in reason
+
+
+@pytest.mark.parametrize("m", [1, 2, 4, 8])
+def test_decode_shaped_gemms_still_produce_candidates(m, a100_caps):
+    """The single-token GEMM must be tunable.
+
+    The smallest BLOCK_M in the grid is 16, so an unconditional overshoot rule
+    rejects *every* candidate for M < 8 and tuning returns nothing. That is the
+    shape single-stream decoding issues most, and the shape the workload suite,
+    the experiment script and the warp-count case study all depend on.
+    """
+    space = MatmulSearchSpace()
+    problem = Problem.create("matmul", "fp16", M=m, N=11008, K=4096)
+    candidates = space.candidates(problem, a100_caps)
+    assert candidates, f"no candidates for M={m}"
+    # The smallest tile has to survive, since nothing smaller exists.
+    assert min(c["BLOCK_M"] for c in candidates) == min(space.BLOCK_M)
+
+
+def test_overshoot_rule_still_bites_when_a_smaller_tile_exists(a100_caps):
+    """Relaxing the rule at the floor must not disable it above the floor."""
+    space = MatmulSearchSpace()
+    problem = Problem.create("matmul", "fp16", M=1, N=11008, K=4096)
+    for config in space.candidates(problem, a100_caps):
+        assert config["BLOCK_M"] == min(space.BLOCK_M)
 
 
 def test_pipeline_filter_rejects_stages_the_k_loop_cannot_fill(a100_caps):

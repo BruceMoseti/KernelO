@@ -43,7 +43,13 @@ def ptx_by_arch(tmp_path_factory):
 
 @pytest.mark.parametrize("arch", ARCHITECTURES)
 def test_kernel_compiles_for_every_dtype(ptx_by_arch, arch):
-    """One kernel entry per dtype the ATen dispatch can select."""
+    """One kernel entry per dtype the pybind entry point accepts.
+
+    AT_DISPATCH_FLOATING_TYPES_AND2 would also instantiate double, which this
+    kernel cannot serve honestly -- it accumulates in float and rescales with
+    rsqrtf. The binding refuses double rather than downgrading it silently, so
+    three instantiations is the complete set.
+    """
     ptx = ptx_by_arch[arch]
     assert ptx.count(".visible .entry") == 3
     for mangled in ("IfE", "I6__halfE", "I13__nv_bfloat16E"):

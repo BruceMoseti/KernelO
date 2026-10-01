@@ -161,8 +161,8 @@ def compile_device_code(toolchain: CudaToolchain, source: Path, output: Path, *,
     return output.read_text()
 
 
-#: A translation unit that instantiates the kernel for every dtype the ATen
-#: dispatch in rmsnorm.cu can produce.
+#: A translation unit that instantiates the kernel for every dtype the
+#: pybind entry point accepts (see the TORCH_CHECK in rmsnorm.cpp).
 INSTANTIATION_SOURCE = """
 #include "rmsnorm_kernel.cuh"
 #include <cuda_fp16.h>

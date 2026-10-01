@@ -86,9 +86,14 @@ def _frame(pandas, db: ResultsDB):
 
 
 def _best_per_label(frame):
-    """Fastest row for each (operation, dtype, shape, label)."""
+    """Fastest row for each (operation, dtype, shape, label).
+
+    Ordered by problem size rather than by the shape string: sorting
+    ``shape_key`` lexicographically puts ``512x512x512`` after
+    ``2048x4096x4096``, which reads as noise in a table.
+    """
     index = frame.groupby(["operation", "dtype", "shape_key", "label"])["median_us"].idxmin()
-    return frame.loc[index].copy()
+    return frame.loc[index].sort_values(["operation", "dtype", "size"]).copy()
 
 
 def _ordered_labels(labels) -> list[str]:
@@ -97,18 +102,32 @@ def _ordered_labels(labels) -> list[str]:
     return ranked + sorted(present - set(ranked))
 
 
-def _shape_order(frame) -> list[str]:
-    pairs = frame[["shape_key", "size"]].drop_duplicates().sort_values("size")
-    return list(pairs["shape_key"])
+def _with_axis_labels(frame):
+    """Add the x-axis key, which has to distinguish dtypes.
+
+    A shape alone is not a unique series: the same ``1024x1024x1024`` may have
+    been measured in fp16 and bf16, and indexing on the shape would both
+    collapse two bars into one label and hand matplotlib a two-element Series
+    where it expects a scalar.
+    """
+    if frame["dtype"].nunique() > 1:
+        return frame.assign(axis_key=frame["shape_key"] + " " + frame["dtype"])
+    return frame.assign(axis_key=frame["shape_key"])
+
+
+def _axis_order(frame) -> list[str]:
+    pairs = frame[["axis_key", "size", "dtype"]].drop_duplicates().sort_values(["size", "dtype"])
+    return list(pairs["axis_key"])
 
 
 def _grouped_bars(plt, frame, *, value, ylabel, title, path: Path) -> Path:
+    frame = _with_axis_labels(frame)
     labels = _ordered_labels(frame["label"])
-    shapes = _shape_order(frame)
+    shapes = _axis_order(frame)
     width = 0.8 / max(len(labels), 1)
     figure, axis = plt.subplots(figsize=(max(7.0, 1.1 * len(shapes) + 2.5), 4.2))
     for offset, label in enumerate(labels):
-        subset = frame[frame["label"] == label].set_index("shape_key")
+        subset = frame[frame["label"] == label].set_index("axis_key")
         heights = [subset[value].get(shape, float("nan")) for shape in shapes]
         positions = [i + offset * width for i in range(len(shapes))]
         axis.bar(positions, heights, width=width, label=LABEL_TITLES.get(label, label))
@@ -127,10 +146,12 @@ def _grouped_bars(plt, frame, *, value, ylabel, title, path: Path) -> Path:
 def _tuning_heatmap(plt, frame, path: Path) -> Path | None:
     """Median latency over the BLOCK_M x BLOCK_N plane for one GEMM shape.
 
-    Uses the largest shape with the most measured candidates, and takes the
-    best latency over the remaining parameters at each point, so the picture is
-    "what is the best this tile can do" rather than an average over
-    configurations that were never going to win.
+    Uses the (shape, dtype) pair with the most measured candidates, which is
+    the one tuning explored most thoroughly, and takes the *best* latency over
+    the remaining parameters at each point -- so the picture is "what is the
+    best this tile can do", not an average over configurations that were never
+    going to win. The dtype is part of the selection because fp16 and bf16
+    tilings must not be averaged together.
     """
     # Databases holding only baselines, or only non-GEMM operators, have no
     # tile columns at all.
@@ -139,8 +160,8 @@ def _tuning_heatmap(plt, frame, path: Path) -> Path | None:
     candidates = frame[(frame["label"] == "kernelforge") & frame["cfg_BLOCK_M"].notna()]
     if candidates.empty:
         return None
-    shape = candidates.groupby("shape_key")["median_us"].count().idxmax()
-    subset = candidates[candidates["shape_key"] == shape]
+    shape, dtype = candidates.groupby(["shape_key", "dtype"])["median_us"].count().idxmax()
+    subset = candidates[(candidates["shape_key"] == shape) & (candidates["dtype"] == dtype)]
     table = subset.pivot_table(
         index="cfg_BLOCK_M", columns="cfg_BLOCK_N", values="median_us", aggfunc="min"
     )
@@ -155,7 +176,7 @@ def _tuning_heatmap(plt, frame, path: Path) -> Path | None:
     axis.set_yticklabels([int(i) for i in table.index])
     axis.set_xlabel("BLOCK_N")
     axis.set_ylabel("BLOCK_M")
-    axis.set_title(f"Best median latency by tile ({shape})")
+    axis.set_title(f"Best median latency by tile ({shape} {dtype})")
     for i in range(table.shape[0]):
         for j in range(table.shape[1]):
             value = table.values[i, j]
@@ -169,7 +190,7 @@ def _tuning_heatmap(plt, frame, path: Path) -> Path | None:
 
 
 def _environment_section(db: ResultsDB) -> list[str]:
-    runs = db.rows()
+    runs = db.runs()
     if not runs:
         return ["No runs recorded."]
     latest = runs[-1]
@@ -184,6 +205,24 @@ def _environment_section(db: ResultsDB) -> list[str]:
     lines = ["| Field | Value |", "| --- | --- |"]
     lines += [f"| {title} | {latest.get(key) or '-'} |" for title, key in fields]
     return lines
+
+
+def _methodology_warnings(frame) -> list[str]:
+    """Settings that make rows in this database incomparable with each other."""
+    warnings = []
+    if frame["flushed_l2"].nunique() > 1:
+        flushed = int((frame["flushed_l2"] == 1).sum())
+        warnings.append(
+            f"this database mixes {flushed} L2-flushed measurement(s) with "
+            f"{len(frame) - flushed} unflushed; the unflushed rows report a bandwidth "
+            "the kernel would not see on cold inputs, so the two are not comparable"
+        )
+    if frame["timer"].nunique() > 1:
+        warnings.append(
+            f"this database mixes timers ({', '.join(sorted(frame['timer'].unique()))}); "
+            "only cuda_event rows are GPU measurements"
+        )
+    return warnings
 
 
 def _summary_table(frame, operation: str) -> list[str]:
@@ -246,6 +285,14 @@ def generate(
         *_environment_section(db),
         "",
     ]
+
+    # Flushed and unflushed timings are not comparable: leaving the inputs
+    # resident in L2 inflates throughput for any problem whose working set
+    # fits. Ranking by median across both would quietly prefer the unflushed
+    # row, so mixing is called out rather than left to be discovered.
+    for warning in _methodology_warnings(frame):
+        artifacts.notes.append(warning)
+        lines += [f"> **Warning:** {warning}", ""]
 
     for operation in present:
         table = _summary_table(frame, operation)
