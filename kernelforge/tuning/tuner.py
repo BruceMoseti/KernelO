@@ -3,16 +3,18 @@
 For a problem, the tuner takes the candidates that survive the kernel's search-space rules, runs
 each one, and checks its output against a float64 reference. Candidates that fail to compile,
 fail at run time, or produce wrong results are recorded with the reason and never benchmarked or
-ranked. Correct candidates are benchmarked. Every outcome is stored in the database, and the
-correct candidate with the lowest median latency is cached under a hardware-aware key. A later
-call for the same problem on the same GPU and Triton version returns the cached config without
-retuning.
+ranked. Only after every candidate has been verified are the correct ones benchmarked, in a
+fixed shuffled order. Every outcome is stored in the database, and the correct candidate with
+the lowest median latency is cached under a hardware-aware key. A later call for the same
+problem on the same GPU and Triton version returns the cached config without retuning.
 
 The tuner never reads parameter names. It works for any kernel that provides a `Tunable`.
 """
 
 from __future__ import annotations
 
+import logging
+import random
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
@@ -23,13 +25,15 @@ import torch
 from kernelforge.benchmark.metrics import gbps, tflops
 from kernelforge.benchmark.runner import BenchmarkResult
 from kernelforge.runtime.environment import Environment
-from kernelforge.testing import verify
+from kernelforge.testing import Verification, verify
 from kernelforge.tuning.cache import cache_key
 from kernelforge.tuning.config import KernelConfig, Problem
 from kernelforge.tuning.database import TuningDatabase
 from kernelforge.tuning.search import Candidates, DeviceLimits, SearchSpace
 
 Timer = Callable[[Callable[[], object]], BenchmarkResult]
+
+logger = logging.getLogger(__name__)
 
 
 class Tunable(Protocol):
@@ -71,6 +75,49 @@ class Measurement:
         return self.benchmark.stats.median_us
 
 
+def _check(
+    fn: Callable[[], torch.Tensor], reference: torch.Tensor, dtype: torch.dtype
+) -> tuple[Verification | None, str | None]:
+    """Run `fn` once and verify its output. Returns the verification and, if rejected, why."""
+    try:
+        verification = verify(reference, fn(), dtype)
+    except Exception as error:  # compile errors, launch failures, resource limits
+        return None, f"{type(error).__name__}: {error}"
+    return verification, None if verification.passed else verification.describe()
+
+
+def _rejected(
+    implementation: str,
+    config: KernelConfig | None,
+    verification: Verification | None,
+    error: str,
+) -> Measurement:
+    ratio = None if verification is None else verification.max_error_ratio
+    return Measurement(implementation, config, False, error=error, max_error_ratio=ratio)
+
+
+def _timed(
+    implementation: str,
+    config: KernelConfig | None,
+    verification: Verification,
+    fn: Callable[[], torch.Tensor],
+    timer: Timer,
+    flops: int | None,
+    num_bytes: int | None,
+) -> Measurement:
+    result = timer(fn)
+    median_us = result.stats.median_us
+    return Measurement(
+        implementation,
+        config,
+        True,
+        max_error_ratio=verification.max_error_ratio,
+        benchmark=result,
+        tflops=None if flops is None else tflops(flops, median_us),
+        gbps=None if num_bytes is None else gbps(num_bytes, median_us),
+    )
+
+
 def measure(
     implementation: str,
     fn: Callable[[], torch.Tensor],
@@ -83,29 +130,11 @@ def measure(
     num_bytes: int | None = None,
 ) -> Measurement:
     """Run `fn` once and verify its output; benchmark it only if the output is correct."""
-    try:
-        verification = verify(reference, fn(), dtype)
-    except Exception as error:  # compile errors, launch failures, resource limits
-        return Measurement(implementation, config, False, error=f"{type(error).__name__}: {error}")
-    if not verification.passed:
-        return Measurement(
-            implementation,
-            config,
-            False,
-            error=verification.describe(),
-            max_error_ratio=verification.max_error_ratio,
-        )
-    result = timer(fn)
-    median_us = result.stats.median_us
-    return Measurement(
-        implementation,
-        config,
-        True,
-        max_error_ratio=verification.max_error_ratio,
-        benchmark=result,
-        tflops=None if flops is None else tflops(flops, median_us),
-        gbps=None if num_bytes is None else gbps(num_bytes, median_us),
-    )
+    verification, error = _check(fn, reference, dtype)
+    if error is not None:
+        return _rejected(implementation, config, verification, error)
+    assert verification is not None
+    return _timed(implementation, config, verification, fn, timer, flops, num_bytes)
 
 
 @dataclass(frozen=True)
@@ -145,27 +174,36 @@ def tune(
     reference = tunable.reference(inputs)
     flops, num_bytes = tunable.flops(problem), tunable.bytes_moved(problem)
     run_id = database.start_run(environment)
-    measurements = []
+    measurements: list[Measurement] = []
+    verified = []
+    logger.info("Verifying %d candidates...", len(candidates.configs))
     for config in candidates.configs:
-        measurement = measure(
-            "kernelforge",
-            partial(tunable.run, config, inputs),
-            reference,
-            problem.dtype,
-            timer,
-            config=config,
-            flops=flops,
-            num_bytes=num_bytes,
+        fn = partial(tunable.run, config, inputs)
+        verification, error = _check(fn, reference, problem.dtype)
+        if error is None:
+            verified.append((config, fn, verification))
+            continue
+        measurement = _rejected("kernelforge", config, verification, error)
+        database.record(run_id, problem, measurement)
+        measurements.append(measurement)
+    logger.info("%d / %d configurations passed correctness", len(verified), len(candidates.configs))
+    if not verified:
+        raise NoCorrectCandidateError(
+            f"none of the {len(candidates.configs)} candidates for {problem} passed correctness"
         )
+
+    # Every candidate is compiled and verified before any is timed, so the GPU stays busy from
+    # one benchmark to the next. A fixed shuffle turns thermal drift over a long session into
+    # noise instead of a bias against whichever configs come last in grid order.
+    random.Random(0).shuffle(verified)
+    logger.info("Benchmarking...")
+    for config, fn, verification in verified:
+        assert verification is not None
+        measurement = _timed("kernelforge", config, verification, fn, timer, flops, num_bytes)
         database.record(run_id, problem, measurement)
         measurements.append(measurement)
 
-    correct = [m for m in measurements if m.correct]
-    if not correct:
-        raise NoCorrectCandidateError(
-            f"none of the {len(measurements)} candidates for {problem} passed correctness"
-        )
-    best = min(correct, key=lambda m: m.median_us)
+    best = min((m for m in measurements if m.correct), key=lambda m: m.median_us)
     assert best.config is not None
     database.store_cache(key, best.config, best.median_us, run_id)
     return TuneResult(

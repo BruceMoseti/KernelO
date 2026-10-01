@@ -158,6 +158,38 @@ def test_failing_candidate_is_recorded_with_its_error(tmp_path: Path, device: to
         ) == [(1,)]
 
 
+def test_every_candidate_is_verified_before_any_is_timed(
+    tmp_path: Path, device: torch.device, caplog: pytest.LogCaptureFixture
+) -> None:
+    order: list[str] = []
+    workload = SmallMatmul(sabotage={_config(16, 16, 16): "wrong"})
+    run, timer = workload.run, workload.timer({})
+
+    def recording_run(config: KernelConfig, inputs: tuple[torch.Tensor, ...]) -> torch.Tensor:
+        order.append("run")
+        return run(config, inputs)
+
+    def recording_timer(fn: object) -> BenchmarkResult:
+        order.append("time")
+        return timer(fn)
+
+    workload.run = recording_run  # type: ignore[method-assign]
+    caplog.set_level("INFO", logger="kernelforge.tuning.tuner")
+    with TuningDatabase(tmp_path / "tuning.db") as database:
+        tune(
+            workload,
+            PROBLEM,
+            database,
+            device=device,
+            limits=LIMITS,
+            environment=SYNTHETIC_GPU,
+            timer=recording_timer,
+        )
+    first_timing = order.index("time")
+    assert order[:first_timing] == ["run"] * 8
+    assert "7 / 8 configurations passed correctness" in caplog.messages
+
+
 def test_best_is_the_fastest_correct_candidate(tmp_path: Path, device: torch.device) -> None:
     fastest = _config(32, 16, 32)
     workload = SmallMatmul()
