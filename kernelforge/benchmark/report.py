@@ -68,7 +68,7 @@ class ReportArtifacts:
 
     def render(self) -> str:
         lines = [f"Report written to {self.directory}", f"  {self.summary.name}"]
-        lines += [f"  {p.name}" for p in self.tables]
+        lines += [f"  {p}" for p in self.tables]
         lines += [f"  {p.name}" for p in self.figures]
         lines += [f"  note: {note}" for note in self.notes]
         return "\n".join(lines)
@@ -126,6 +126,18 @@ def _best_per_label(frame: DataFrame) -> DataFrame:
     keys = ["environment", "operation", "dtype", "shape_key", "label"]
     index = frame.groupby(keys)["median_us"].idxmin()
     return frame.loc[index].sort_values(["operation", "dtype", "size", "environment"]).copy()
+
+
+def _speedups(best: DataFrame) -> DataFrame:
+    """KernelForge's speedup over every other implementation of the same problem.
+
+    Paired within one environment, like every comparison in the report.
+    """
+    keys = ["environment", "dtype", "shape_key"]
+    mine = best.loc[best["label"] == "kernelforge", [*keys, "median_us"]]
+    others = best[best["label"] != "kernelforge"]
+    paired = others.merge(mine, on=keys, suffixes=("", "_kernelforge"))
+    return paired.assign(speedup=paired["median_us"] / paired["median_us_kernelforge"])
 
 
 def _ordered_labels(labels: Any) -> list[str]:
@@ -297,7 +309,7 @@ def _summary_table(frame: DataFrame, operation: str) -> list[str]:
 def generate(
     db: ResultsDB, directory: str | Path = "reports", *, operations: list[str] | None = None
 ) -> ReportArtifacts:
-    """Write ``summary.md``, CSV exports and figures into ``directory``."""
+    """Write ``summary.md`` and figures into ``directory``, CSV exports beside the database."""
     pandas, plt = _require_dependencies()
     out = Path(directory)
     out.mkdir(parents=True, exist_ok=True)
@@ -342,9 +354,10 @@ def generate(
         lines += [f"## {operation}", "", *table, ""]
 
         subset = frame[frame["operation"] == operation]
-        export = out / f"{operation}.csv"
-        _best_per_label(subset).to_csv(export, index=False)
-        artifacts.tables.append(export)
+        for dtype, rows in _best_per_label(subset).groupby("dtype"):
+            export = db.path.parent / f"{operation}_{dtype}.csv"
+            rows.to_csv(export, index=False)
+            artifacts.tables.append(export)
 
         best = _best_per_label(subset)
         artifacts.figures.append(
@@ -357,6 +370,19 @@ def generate(
                 path=out / f"{operation}_latency.png",
             )
         )
+        speedups = _speedups(best)
+        if not speedups.empty:
+            name = "fusion" if operation == "fused_linear" else operation
+            artifacts.figures.append(
+                _grouped_bars(
+                    plt,
+                    speedups,
+                    value="speedup",
+                    ylabel="KernelForge speedup (x)",
+                    title=f"{operation}: KernelForge speedup by shape",
+                    path=out / f"{name}_speedup.png",
+                )
+            )
         if operation in MEMORY_BOUND_OPERATIONS:
             if best["gbps"].notna().any():
                 artifacts.figures.append(
@@ -392,7 +418,8 @@ def generate(
     lines += [
         "## Files",
         "",
-        *(f"- `{p.name}`" for p in artifacts.tables + artifacts.figures),
+        *(f"- `{p}`" for p in artifacts.tables),
+        *(f"- `{p.name}`" for p in artifacts.figures),
         "",
     ]
     artifacts.summary.write_text("\n".join(lines))

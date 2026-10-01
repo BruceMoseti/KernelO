@@ -84,7 +84,7 @@ kernelforge profile matmul --m 4096 --n 4096 --k 4096 --backend nsight \
 
 ### Results
 
-Results table to be filled from `reports/matmul.csv` and the `ncu` output, one
+Results table to be filled from `results/matmul_fp16.csv` and the `ncu` output, one
 row per tile at `4096³` and one per tile at `256²`, with columns: median
 latency, TFLOP/s, achieved occupancy, SM and DRAM throughput as a percentage of
 peak, registers per thread, and shared memory per block.
@@ -228,7 +228,7 @@ large compared with the operands.
 kernelforge compare fused_linear --m 4096 --n 11008 --k 4096 --dtype fp16
 kernelforge profile fused_linear --m 4096 --n 11008 --k 4096
 kernelforge benchmark fused_linear --suite transformer --dtype fp16
-kernelforge report
+kernelforge report     # reports/fusion_speedup.png: the fused kernel against each baseline, by shape
 ```
 
 `kernelforge profile` with the default `torch` backend prints launches per call
