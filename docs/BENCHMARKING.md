@@ -168,11 +168,20 @@ are not the gate.
 | RMSNorm bytes | `(2*rows*cols + cols) * itemsize` |
 | Fused linear bytes | `(M*K + K*N + N + M*N) * itemsize`, against `5*M*N` of output traffic unfused |
 | Arithmetic intensity | `flops / bytes` |
+| Fraction of published peak | TFLOP/s or GB/s divided by the GPU's entry in `PUBLISHED_PEAKS` (`benchmark/metrics.py`) |
 
 Byte counts are **minimum** traffic: each input read once, each output written
 once. A tiled GEMM necessarily re-reads its operands, so measured bandwidth can
 come out below the achievable peak. That gap is a result, not an error in the
 model — it is what the memory analysis in the case studies examines.
+
+`kernelforge report` gives KernelForge's throughput as a fraction of NVIDIA's
+published dense peak for the GPU, and cites the document each peak comes from.
+The roof is Tensor Core FP16/BF16 math with FP32 accumulate for fp16 and bf16
+(half the FP16-accumulate figure on GeForce cards), FP32 without Tensor Cores
+for fp32, since the kernels pin `tl.dot` to IEEE, and DRAM bandwidth for the
+memory-bound operators. These are spec-sheet figures at boost clock, not
+measurements. A GPU with no entry gets no fraction rather than an estimate.
 
 Compute-bound operators are reported in TFLOP/s and memory-bound ones in GB/s,
 selected by `Operator.is_memory_bound()`. Reporting TFLOP/s for RMSNorm would

@@ -19,6 +19,7 @@ from math import prod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kernelforge.benchmark import metrics
 from kernelforge.db import ENVIRONMENT_FIELDS, ResultsDB
 
 if TYPE_CHECKING:  # pandas is an optional extra; see `_require_dependencies`
@@ -234,6 +235,37 @@ def _environment_section(environments: list[tuple]) -> list[str]:
     return lines
 
 
+def _peaks_section(gpu_names: Any) -> list[str]:
+    """The published roofs that "of published peak" divides by, with their sources."""
+    known = [name for name in gpu_names if name in metrics.PUBLISHED_PEAKS]
+    unknown = [name for name in gpu_names if name not in metrics.PUBLISHED_PEAKS]
+    lines = []
+    if known:
+        lines += [
+            '"of published peak" divides by NVIDIA\'s published dense peak for the GPU: '
+            "a spec-sheet figure at boost clock, not a measurement.",
+            "",
+            "| GPU | FP16/BF16 Tensor Core TFLOP/s (FP32 accumulate) | FP32 TFLOP/s "
+            "| DRAM GB/s | Source |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        for name in known:
+            peak = metrics.PUBLISHED_PEAKS[name]
+            lines.append(
+                f"| {name} | {peak.tensor_tflops:g} | {peak.fp32_tflops:g} "
+                f"| {peak.dram_gbps:g} | {peak.source} |"
+            )
+        lines.append("")
+    if unknown:
+        lines += [
+            f"No published peak on file for {', '.join(unknown)}; add one to "
+            "`PUBLISHED_PEAKS` in `kernelforge/benchmark/metrics.py` from NVIDIA's "
+            "datasheet for that board.",
+            "",
+        ]
+    return lines
+
+
 def _methodology_warnings(frame: DataFrame) -> list[str]:
     """Settings that make rows in this database incomparable with each other."""
     warnings = []
@@ -262,7 +294,7 @@ def _summary_table(frame: DataFrame, operation: str) -> list[str]:
     metric_column = "gbps" if memory_bound else "tflops"
 
     header = ["shape", "dtype", "env", *(LABEL_TITLES.get(x, x) + " (us)" for x in labels)]
-    header += [f"KernelForge {metric_title}", "speedup vs eager"]
+    header += [f"KernelForge {metric_title}", "of published peak", "speedup vs eager"]
     lines = ["| " + " | ".join(header) + " |", "| " + " | ".join(["---"] * len(header)) + " |"]
 
     groups = best.groupby(["shape_key", "dtype", "environment"], sort=False)
@@ -274,6 +306,11 @@ def _summary_table(frame: DataFrame, operation: str) -> list[str]:
         mine = group[group["label"] == "kernelforge"]
         throughput = mine[metric_column].max() if not mine.empty else None
         row.append(f"{throughput:.1f}" if throughput and throughput == throughput else "-")
+        peak = metrics.PUBLISHED_PEAKS.get(group["gpu_name"].iloc[0])
+        if peak is not None and throughput and throughput == throughput:
+            row.append(f"{throughput / peak.rate(dtype, memory_bound=memory_bound):.1%}")
+        else:
+            row.append("-")
         if "kernelforge" in times and "torch_eager" in times:
             row.append(f"{times['torch_eager'] / times['kernelforge']:.2f}x")
         else:
@@ -313,6 +350,7 @@ def generate(
         "",
         *_environment_section(environments),
         "",
+        *_peaks_section(frame["gpu_name"].dropna().unique()),
     ]
 
     # Flushed and unflushed timings are not comparable: leaving the inputs
