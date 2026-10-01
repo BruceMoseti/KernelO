@@ -117,6 +117,42 @@ def test_boundary_masking_across_tile_shapes(tile, shape, device):
     )
 
 
+@pytest.mark.parametrize("seed", range(24))
+def test_randomised_shapes(seed, device):
+    """Random shapes, random tilings. Catches what a fixed list does not.
+
+    A shape the search space has no candidates for runs the default
+    configuration, as dispatch would.
+    """
+    import random
+
+    from kernelforge.kernels.fused_linear import (
+        DEFAULT_CONFIG,
+        fused_linear_gelu,
+        linear_gelu_reference,
+    )
+    from kernelforge.runtime.env import device_caps
+    from kernelforge.tuning.search import FusedLinearSearchSpace
+
+    # Seeded by name: a bare seed would draw the GEMM suite's shapes.
+    rng = random.Random(f"fused_linear-{seed}")
+    m, n, k = (rng.randint(1, 600) for _ in range(3))
+    dtype = rng.choice(DTYPES)
+    if dtype == torch.bfloat16 and device.type == "cpu":
+        pytest.skip("bf16 needs a GPU: the interpreter does bf16 arithmetic on the raw bits")
+    problem = Problem.create("fused_linear", dtype, M=m, N=n, K=k)
+    candidates = FusedLinearSearchSpace().candidates(problem, device_caps(device))
+    chosen = rng.choice(candidates) if candidates else DEFAULT_CONFIG
+
+    x, w, bias = inputs(m, k, n, dtype, device, seed=seed)
+    assert_verified(
+        linear_gelu_reference(x.double(), w.double(), bias.double()),
+        fused_linear_gelu(x, w, bias, config=chosen),
+        dtype=dtype,
+        context=f"fused_linear {m}x{n}x{k} {dtype} {chosen!r}",
+    )
+
+
 def test_gelu_rewrite_matches_pytorch_across_the_whole_range(device):
     """``x/(1+exp(-2z))`` against ``0.5*x*(1+tanh(z))``, including the tails.
 

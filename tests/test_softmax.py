@@ -88,6 +88,38 @@ def test_softmax_rows_per_program(rows_per_program, device):
     )
 
 
+@pytest.mark.parametrize("seed", range(24))
+def test_softmax_randomised_shapes(seed, device):
+    """Random shapes, dtypes and configurations. Catches what a fixed list does not.
+
+    Widths are log-uniform up to the single-pass limit of 16384. A row of 16
+    columns or fewer has no candidates, since every configuration would idle
+    threads, so it runs the default configuration, as dispatch would.
+    """
+    import random
+
+    from kernelforge.kernels.softmax import default_config, softmax
+    from kernelforge.runtime.env import device_caps
+    from kernelforge.tuning.search import SoftmaxSearchSpace
+
+    # Seeded by name, so that each kernel's suite draws its own shapes.
+    rng = random.Random(f"softmax-{seed}")
+    rows, cols = rng.randint(1, 600), round(2 ** rng.uniform(0, 14))
+    dtype = rng.choice(DTYPES)
+    problem = Problem.create("softmax", dtype, rows=rows, cols=cols)
+    candidates = SoftmaxSearchSpace().candidates(problem, device_caps(device))
+    chosen = rng.choice(candidates) if candidates else default_config(cols)
+
+    gen = torch.Generator(device=device).manual_seed(seed)
+    x = torch.randn(rows, cols, device=device, dtype=dtype, generator=gen)
+    assert_verified(
+        torch.softmax(x.double(), dim=-1),
+        softmax(x, config=chosen),
+        dtype=dtype,
+        context=f"softmax {rows}x{cols} {dtype} {chosen!r}",
+    )
+
+
 def test_softmax_candidates_all_agree(device):
     from kernelforge.kernels.softmax import softmax
     from kernelforge.runtime.env import device_caps

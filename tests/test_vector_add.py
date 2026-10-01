@@ -45,6 +45,35 @@ def test_vector_add_across_sizes(n, dtype, device):
     )
 
 
+@pytest.mark.parametrize("seed", range(24))
+def test_vector_add_randomised_sizes(seed, device):
+    """Random sizes, dtypes and configurations, with sizes log-uniform up to 2**20."""
+    import random
+
+    from kernelforge.kernels.vector_add import vector_add
+    from kernelforge.runtime.env import device_caps
+    from kernelforge.tuning.search import VectorAddSearchSpace
+
+    # Seeded by name, so that each kernel's suite draws its own shapes.
+    rng = random.Random(f"vector_add-{seed}")
+    n = round(2 ** rng.uniform(0, 20))
+    dtype = rng.choice(DTYPES)
+    if dtype == torch.bfloat16 and device.type == "cpu":
+        pytest.skip("bf16 needs a GPU: the interpreter does bf16 arithmetic on the raw bits")
+    problem = Problem.create("vector_add", dtype, n=n)
+    chosen = rng.choice(VectorAddSearchSpace().candidates(problem, device_caps(device)))
+
+    gen = torch.Generator(device=device).manual_seed(seed)
+    a = torch.randn(n, device=device, dtype=dtype, generator=gen)
+    b = torch.randn(n, device=device, dtype=dtype, generator=gen)
+    assert_verified(
+        a.double() + b.double(),
+        vector_add(a, b, config=chosen),
+        dtype=dtype,
+        context=f"n={n} {dtype} {chosen!r}",
+    )
+
+
 def test_vector_add_candidates_all_agree(device):
     from kernelforge.kernels.vector_add import vector_add
     from kernelforge.runtime.env import device_caps

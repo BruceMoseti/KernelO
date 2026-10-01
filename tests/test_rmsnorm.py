@@ -76,6 +76,37 @@ def test_rows_per_program_with_an_indivisible_row_count(rows_per_program, rows, 
     )
 
 
+@pytest.mark.parametrize("seed", range(24))
+def test_randomised_shapes(seed, device):
+    """Random shapes, dtypes and configurations. Catches what a fixed list does not.
+
+    Widths are log-uniform up to the single-pass limit of 16384. A row of 16
+    columns or fewer has no candidates, since every configuration would idle
+    threads, so it runs the default configuration, as dispatch would.
+    """
+    import random
+
+    from kernelforge.kernels.rmsnorm import default_config, rmsnorm, rmsnorm_reference
+    from kernelforge.runtime.env import device_caps
+    from kernelforge.tuning.search import RMSNormSearchSpace
+
+    # Seeded by name, so that each kernel's suite draws its own shapes.
+    rng = random.Random(f"rmsnorm-{seed}")
+    rows, cols = rng.randint(1, 600), round(2 ** rng.uniform(0, 14))
+    dtype = rng.choice(DTYPES)
+    problem = Problem.create("rmsnorm", dtype, rows=rows, cols=cols)
+    candidates = RMSNormSearchSpace().candidates(problem, device_caps(device))
+    chosen = rng.choice(candidates) if candidates else default_config(cols)
+
+    x, gamma = inputs(rows, cols, dtype, device, seed=seed)
+    assert_verified(
+        rmsnorm_reference(x.double(), gamma.double()),
+        rmsnorm(x, gamma, config=chosen),
+        dtype=dtype,
+        context=f"rmsnorm {rows}x{cols} {dtype} {chosen!r}",
+    )
+
+
 def test_wide_fp16_rows_need_the_fp32_reduction(device):
     """The test that fails if the upcast is removed.
 
