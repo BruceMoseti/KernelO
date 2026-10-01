@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS runs (
     gpu_memory_bytes    INTEGER,
     sm_count            INTEGER,
     device_key          TEXT    NOT NULL,
+    torch_matmul_fp16_reduced_precision INTEGER,
+    torch_matmul_bf16_reduced_precision INTEGER,
     kernelforge_version TEXT,
     notes               TEXT    NOT NULL DEFAULT ''
 );
@@ -172,8 +174,10 @@ class ResultsDB:
             INSERT INTO runs (
                 timestamp, hostname, platform, python_version, torch_version,
                 triton_version, cuda_version, driver_version, gpu_name, gpu_arch,
-                gpu_memory_bytes, sm_count, device_key, kernelforge_version, notes
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                gpu_memory_bytes, sm_count, device_key,
+                torch_matmul_fp16_reduced_precision, torch_matmul_bf16_reduced_precision,
+                kernelforge_version, notes
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 env.timestamp,
@@ -189,6 +193,8 @@ class ResultsDB:
                 env.gpu_memory_bytes,
                 env.sm_count,
                 env.device_key,
+                env.torch_matmul_fp16_reduced_precision,
+                env.torch_matmul_bf16_reduced_precision,
                 version,
                 notes,
             ),

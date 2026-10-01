@@ -15,6 +15,7 @@ carries:
 | CUDA version | `torch.version.cuda` |
 | NVIDIA driver version (e.g. 550.54.15) | `nvidia-smi`; PyTorch only exposes the CUDA driver API version, which many driver releases share |
 | PyTorch, Triton, Python versions | the installed packages |
+| Whether fp16 and bf16 GEMMs may reduce in reduced precision | `torch.backends.cuda.matmul`; these change what cuBLAS computes for the PyTorch baselines |
 | Platform, hostname, UTC timestamp | the host |
 | dtype, tensor shapes, kernel configuration | the problem and config descriptors |
 | warmup count, iteration count, timer, L2-flush flag | the harness |

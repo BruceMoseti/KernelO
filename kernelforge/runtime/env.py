@@ -169,6 +169,10 @@ class Environment:
     gpu_memory_bytes: int | None
     sm_count: int | None
     device_key: str
+    # PyTorch settings that change what cuBLAS computes for the fp16 and bf16
+    # baselines: whether a GEMM may reduce in reduced precision.
+    torch_matmul_fp16_reduced_precision: bool
+    torch_matmul_bf16_reduced_precision: bool
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -185,6 +189,11 @@ class Environment:
             ("CUDA", self.cuda_version or "-"),
             ("Driver", self.driver_version or "-"),
             ("PyTorch", self.torch_version),
+            (
+                "Reduced-precision reductions",
+                f"fp16 {'allowed' if self.torch_matmul_fp16_reduced_precision else 'off'}, "
+                f"bf16 {'allowed' if self.torch_matmul_bf16_reduced_precision else 'off'}",
+            ),
             ("Triton", self.triton_version or "not installed"),
             ("Python", self.python_version),
             ("Platform", self.platform),
@@ -212,6 +221,12 @@ def capture_environment(device: torch.device | str | int | None = None) -> Envir
         gpu_memory_bytes=caps.total_memory_bytes if caps else None,
         sm_count=caps.sm_count if caps else None,
         device_key=device_key(device),
+        torch_matmul_fp16_reduced_precision=(
+            torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction
+        ),
+        torch_matmul_bf16_reduced_precision=(
+            torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction
+        ),
     )
 
 
