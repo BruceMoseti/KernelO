@@ -60,8 +60,8 @@ bound and reuse stops being the binding constraint. At 256² the ordering should
 ### Method
 
 ```bash
-kernelforge tune matmul --m 4096 --n 4096 --k 4096 --dtype fp16 --max-candidates 432
-kernelforge tune matmul --m 256  --n 256  --k 1024 --dtype fp16 --max-candidates 432
+kernelforge tune matmul --m 4096 --n 4096 --k 4096 --dtype fp16 --min-candidates 432
+kernelforge tune matmul --m 256  --n 256  --k 1024 --dtype fp16 --min-candidates 432
 kernelforge report     # reports/tuning_heatmap.png is the BLOCK_M x BLOCK_N plane
 ```
 

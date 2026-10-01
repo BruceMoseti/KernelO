@@ -255,7 +255,7 @@ optimum. Instead there are two distinct mechanisms:
 
 The difference is what each claims: a wrong filter excludes the true optimum
 while asserting it cannot win; the budget can also leave the optimum
-unmeasured, but only defers it, and `--max-candidates` lifts it. All three
+unmeasured, but only defers it, and `--min-candidates` raises it. All three
 counts (generated / feasible / budgeted) are reported so a shrinking space is
 visible.
 

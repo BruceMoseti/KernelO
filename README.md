@@ -248,7 +248,7 @@ Separating *filters* (rules that claim a configuration cannot win) from the
 *budget* (a cost bound that only defers what it cuts) is deliberate. Either can
 exclude the true optimum: a filter by being wrong, the budget by never
 measuring it. All three counts are reported so a shrinking space is visible
-rather than silent, and `--max-candidates` lifts the budget.
+rather than silent, and `--min-candidates` raises the budget.
 
 ### Verifying GPU kernels without a GPU
 
