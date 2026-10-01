@@ -46,7 +46,7 @@ def test_softmax_across_awkward_shapes(shape, dtype, device):
     gen = torch.Generator(device=device).manual_seed(0)
     x = torch.randn(rows, cols, device=device, dtype=dtype, generator=gen)
     assert_verified(
-        torch.softmax(x, dim=-1),
+        torch.softmax(x.double(), dim=-1),
         softmax(x, config=default_config(cols)),
         dtype=dtype,
         context=f"softmax {rows}x{cols} {dtype}",
@@ -92,7 +92,9 @@ def test_softmax_rows_per_program(rows_per_program, device):
         ROWS_PER_PROGRAM=rows_per_program,
         num_warps=4,
     )
-    assert_verified(torch.softmax(x, dim=-1), softmax(x, config=config), dtype=torch.float16)
+    assert_verified(
+        torch.softmax(x.double(), dim=-1), softmax(x, config=config), dtype=torch.float16
+    )
 
 
 def test_softmax_candidates_all_agree(device):
@@ -103,7 +105,7 @@ def test_softmax_candidates_all_agree(device):
     rows, cols = 129, 1024
     gen = torch.Generator(device=device).manual_seed(0)
     x = torch.randn(rows, cols, device=device, dtype=torch.float16, generator=gen)
-    expected = torch.softmax(x, dim=-1)
+    expected = torch.softmax(x.double(), dim=-1)
     problem = Problem.create("softmax", "fp16", rows=rows, cols=cols)
     for candidate in SoftmaxSearchSpace().candidates(problem, device_caps(device)):
         assert_verified(
@@ -126,7 +128,12 @@ def test_vector_add_across_sizes(n, dtype, device):
     gen = torch.Generator(device=device).manual_seed(0)
     a = torch.randn(n, device=device, dtype=dtype, generator=gen)
     b = torch.randn(n, device=device, dtype=dtype, generator=gen)
-    assert_verified(a + b, vector_add(a, b, config=DEFAULT_CONFIG), dtype=dtype, context=f"n={n}")
+    assert_verified(
+        a.double() + b.double(),
+        vector_add(a, b, config=DEFAULT_CONFIG),
+        dtype=dtype,
+        context=f"n={n}",
+    )
 
 
 def test_vector_add_candidates_all_agree(device):
@@ -138,7 +145,7 @@ def test_vector_add_candidates_all_agree(device):
     gen = torch.Generator(device=device).manual_seed(0)
     a = torch.randn(n, device=device, dtype=torch.float16, generator=gen)
     b = torch.randn(n, device=device, dtype=torch.float16, generator=gen)
-    expected = a + b
+    expected = a.double() + b.double()
     problem = Problem.create("vector_add", "fp16", n=n)
     for candidate in VectorAddSearchSpace().candidates(problem, device_caps(device)):
         assert_verified(expected, vector_add(a, b, config=candidate), dtype=torch.float16)
