@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kernelforge"
+version = "0.1.0"
+description = "Hardware-aware GPU kernel autotuning and inference optimization for transformer workloads."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+    "torch>=2.2",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+# Triton ships with the CUDA builds of PyTorch on Linux. It is declared as an
+# extra so that `pip install kernelforge` still works on machines where the
+# wheel is unavailable (macOS, aarch64) and only the CPU-side tooling is needed.
+gpu = ["triton>=3.0"]
+report = ["pandas>=2.0", "matplotlib>=3.7"]
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.5",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+]
+
+[project.scripts]
+kernelforge = "kernelforge.cli.main:main"
+
+[tool.setuptools.packages.find]
+include = ["kernelforge*"]
+
+[tool.setuptools.package-data]
+kernelforge = ["csrc/*.cu", "csrc/*.cpp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "gpu: requires a CUDA device (deselect with '-m \"not gpu\"')",
+    "slow: long-running benchmark or tuning test",
+]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+    "E501",    # line length is handled by the formatter
+    "B008",    # function calls in argument defaults are used for argparse plumbing
+    "SIM108",  # ternaries are not always clearer than if/else here
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Triton kernels use `tl.*` builtins that shadow Python names and take many
+# arguments by design; the pointer-arithmetic style is dictated by Triton.
+"kernelforge/kernels/*.py" = ["E741"]
