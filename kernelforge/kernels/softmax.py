@@ -3,10 +3,10 @@
     y_i = exp(x_i - max(x)) / sum_j exp(x_j - max(x))
 
 Subtracting the row maximum is not an optimisation, it is a requirement: the
-largest fp16 value is 65504, so ``exp`` overflows for x > 11 and the naive
-``exp(x) / sum(exp(x))`` returns NaN on inputs that occur routinely in
-attention logits. Shifting by the maximum leaves the result mathematically
-unchanged while bounding every exponent at zero.
+naive ``exp(x) / sum(exp(x))`` returns NaN once ``exp`` overflows, which in
+fp16 happens for x > 11, a routine attention logit. This kernel exponentiates
+in fp32, where the limit is x > 88.7. Shifting by the maximum leaves the result
+mathematically unchanged while bounding every exponent at zero.
 
 The kernel is single-pass: one program loads an entire row into registers,
 reduces it twice (max, then sum) without going back to global memory, and
