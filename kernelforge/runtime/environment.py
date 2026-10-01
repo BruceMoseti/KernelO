@@ -7,6 +7,7 @@ an `Environment`.
 
 from __future__ import annotations
 
+import functools
 import platform
 import subprocess
 from dataclasses import dataclass
@@ -61,6 +62,7 @@ def collect_environment() -> Environment:
     )
 
 
+@functools.cache
 def _nvidia_driver_version() -> str | None:
     # PyTorch exposes only the CUDA driver API version, not the driver release (e.g. 550.54.15).
     try:
