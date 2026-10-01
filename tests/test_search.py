@@ -152,6 +152,57 @@ def test_overshoot_rule_still_bites_when_a_smaller_tile_exists(a100_caps):
         assert config["BLOCK_M"] == min(space.BLOCK_M)
 
 
+@pytest.mark.parametrize(
+    "m,n,k,dtype",
+    [
+        (128, 1, 128, "fp16"),
+        (128, 1, 128, "bf16"),
+        (4096, 8, 4096, "fp16"),
+        (1, 1, 1, "fp16"),
+        (1, 1, 1, "bf16"),
+        (1, 1, 1, "fp32"),
+        (8, 24, 64, "fp32"),
+    ],
+)
+def test_narrow_and_tiny_gemms_still_produce_candidates(m, n, k, dtype, a100_caps):
+    """Every problem must leave something to measure.
+
+    Below N=16 the overshoot rule admits only BLOCK_N=16, a 32-byte row in a
+    16-bit dtype that the coalescing rule rejected. When M and N are both
+    small, no tile the overshoot rule admits reaches the size heuristics'
+    floor. Either way the whole grid was rejected -- for shapes such as an
+    MoE router, whose N is the number of experts.
+    """
+    problem = Problem.create("matmul", dtype, M=m, N=n, K=k)
+    assert MatmulSearchSpace().candidates(problem, a100_caps), f"no candidates for {problem}"
+
+
+def test_coalescing_rule_applies_only_when_the_tile_row_is_shorter_than_the_row(a100_caps):
+    """A tile as wide as the matrix row is contiguous with the next row."""
+    space = MatmulSearchSpace()
+    config = gemm_config(BLOCK_M=128, BLOCK_N=16)
+    wide = Problem.create("matmul", "fp16", M=2048, N=4096, K=4096)
+    reason = space.reject_reason(config, wide, a100_caps)
+    assert reason is not None and "uncoalesced B tile" in reason
+    narrow = Problem.create("matmul", "fp16", M=2048, N=8, K=4096)
+    assert space.reject_reason(config, narrow, a100_caps) is None
+
+
+def test_size_heuristics_yield_only_for_the_least_bad_configuration(a100_caps):
+    """For 1x1x1 nothing beats a 16x16 tile at the fewest warps, so only that survives."""
+    space = MatmulSearchSpace()
+    tiny = Problem.create("matmul", "fp16", M=1, N=1, K=1)
+    tiles = {
+        (c["BLOCK_M"], c["BLOCK_N"], c["num_warps"]) for c in space.candidates(tiny, a100_caps)
+    }
+    assert tiles == {(16, 16, 2)}
+    decode = Problem.create("matmul", "fp16", M=1, N=11008, K=4096)
+    reason = space.reject_reason(
+        gemm_config(BLOCK_M=16, BLOCK_N=16, num_warps=2), decode, a100_caps
+    )
+    assert reason is not None and "tile too small" in reason
+
+
 def test_pipeline_filter_rejects_stages_the_k_loop_cannot_fill(a100_caps):
     shallow = Problem.create("matmul", "fp16", M=2048, N=2048, K=32)
     reason = MatmulSearchSpace().reject_reason(
