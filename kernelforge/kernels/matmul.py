@@ -35,6 +35,8 @@ measuring the precision gap rather than the kernel.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import torch
 import triton
 import triton.language as tl
@@ -184,7 +186,7 @@ def matmul_triton_autotune(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     _, n = b.shape
     c = torch.empty((m, n), device=a.device, dtype=a.dtype)
 
-    def grid(meta):
+    def grid(meta: dict[str, int]) -> tuple[int]:
         return (triton.cdiv(m, meta["BLOCK_M"]) * triton.cdiv(n, meta["BLOCK_N"]),)
 
     matmul_kernel_autotuned[grid](
@@ -242,7 +244,9 @@ class MatmulOperator(Operator):
         dims = problem.dims_dict
         return metrics.matmul_bytes(dims["M"], dims["N"], dims["K"], problem.itemsize)
 
-    def baselines(self, problem: Problem, inputs):
+    def baselines(
+        self, problem: Problem, inputs: tuple[torch.Tensor, ...]
+    ) -> dict[str, Callable[[], torch.Tensor]]:
         a, b = inputs
         return {
             "torch_eager": lambda: torch.matmul(a, b),
