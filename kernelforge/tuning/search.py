@@ -354,8 +354,13 @@ class _BlockedGemmSpace(SearchSpace):
     ) -> tuple[float, ...]:
         """Rank survivors for the budget.
 
-        1. At least one full wave of programs. A grid smaller than the SM
-           count leaves hardware idle for the whole kernel.
+        1. Programs, saturating at one full wave. Clamping at ``sm_count`` is
+           what makes this work in both regimes: for a large problem every
+           tiling fills the GPU, the term ties, and reuse decides; for a small
+           one it cannot, and the term prefers the tiling that keeps more
+           multiprocessors busy. Without the clamp, a 256x256 GEMM would
+           spend its budget on 128x128 tiles that occupy four SMs out of a
+           hundred.
         2. Data reuse per byte of tile loaded, ``BM*BN / (BM+BN)``: a tile
            loads ``BK*(BM+BN)`` elements to produce ``BM*BN`` outputs, so this
            ratio is the arithmetic intensity of the inner loop.
@@ -363,12 +368,11 @@ class _BlockedGemmSpace(SearchSpace):
         """
         dims = problem.dims_dict
         bm, bn = config["BLOCK_M"], config["BLOCK_N"]
-        programs = self.num_programs(config, problem)
-        full_wave = 0 if programs >= caps.sm_count else 1
+        programs = min(self.num_programs(config, problem), caps.sm_count)
         reuse = (bm * bn) / (bm + bn)
         padded = ceil_div(dims["M"], bm) * bm * ceil_div(dims["N"], bn) * bn
         waste = padded / (dims["M"] * dims["N"])
-        return (full_wave, -reuse, waste)
+        return (-programs, -reuse, waste)
 
 
 class MatmulSearchSpace(_BlockedGemmSpace):
@@ -437,15 +441,14 @@ class _RowReductionSpace(SearchSpace):
     def priority(
         self, config: KernelConfig, problem: Problem, caps: DeviceCaps
     ) -> tuple[float, ...]:
-        """Prefer a full wave, then fewer elements per thread.
+        """Prefer parallelism up to a full wave, then fewer elements per thread.
 
         These kernels are memory bound, so the goal is enough concurrent
         threads to keep loads in flight rather than data reuse.
         """
-        programs = self.num_programs(config, problem)
-        full_wave = 0 if programs >= caps.sm_count else 1
+        programs = min(self.num_programs(config, problem), caps.sm_count)
         per_thread = config["BLOCK_SIZE"] / (config["num_warps"] * caps.warp_size)
-        return (full_wave, per_thread)
+        return (-programs, per_thread)
 
 
 class SoftmaxSearchSpace(_RowReductionSpace):
@@ -481,9 +484,8 @@ class VectorAddSearchSpace(SearchSpace):
     def priority(
         self, config: KernelConfig, problem: Problem, caps: DeviceCaps
     ) -> tuple[float, ...]:
-        programs = self.num_programs(config, problem)
-        full_wave = 0 if programs >= caps.sm_count else 1
-        return (full_wave, -config["BLOCK_SIZE"])
+        programs = min(self.num_programs(config, problem), caps.sm_count)
+        return (-programs, -config["BLOCK_SIZE"])
 
 
 SEARCH_SPACES: dict[str, type[SearchSpace]] = {
