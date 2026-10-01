@@ -83,6 +83,22 @@ hardware:
 - `torch.utils.benchmark.Timer` uses host timing with a warm L2. On a compute-bound,
   multi-millisecond MatMul, GPU execution dominates both, so medians must agree within 15%.
 
+## Inputs and benchmark scripts
+
+Inputs are standard-normal values from a seeded generator. They are not zeros or constants:
+GPU power draw depends on the data, and under a power limit so do clocks, so trivial inputs can
+run faster than realistic data.
+
+`benchmarks/vector_add.py` and `benchmarks/softmax.py` need a GPU. They write one CSV row per
+(implementation, dtype, shape) to `results/`, containing the latency statistics, effective
+bandwidth, harness settings, and every metadata field above.
+
+- Each implementation's output is checked with `verify` before it is timed. Outputs that fail
+  are recorded as incorrect and not timed.
+- `torch.compile` runs in its default mode with `dynamic=False`, and its caches are reset for
+  each shape. Without the reset, Dynamo's recompile limit would silently fall back to eager
+  after a few shapes.
+
 ## Correctness
 
 A kernel output is only timed or ranked after `kernelforge.testing.verify` accepts it. The
