@@ -92,6 +92,17 @@ def test_cpu_path_is_labelled_so_it_cannot_be_mistaken_for_a_gpu_timing():
     assert result.flushed_l2 is False
 
 
+def test_result_carries_the_environment_it_was_measured_in():
+    from kernelforge.runtime.env import capture_environment
+
+    result = benchmark(lambda: None, warmup=0, iterations=2, device="cpu")
+    assert result.environment is not None
+    measured = result.environment.as_dict()
+    expected = capture_environment(torch.device("cpu")).as_dict()
+    del measured["timestamp"], expected["timestamp"]
+    assert measured == expected
+
+
 @pytest.mark.parametrize("warmup,iterations", [(-1, 10), (0, 0), (0, -5)])
 def test_benchmark_validates_its_arguments(warmup, iterations):
     with pytest.raises(ValueError):

@@ -101,6 +101,14 @@ def test_measurement_round_trips(db):
     assert row["torch_version"] == env.torch_version
 
 
+def test_runs_record_the_reduced_precision_reduction_flags(db):
+    env = capture_environment()
+    db.start_run(env)
+    (run,) = db.runs()
+    assert run["torch_matmul_fp16_reduced_precision"] == env.torch_matmul_fp16_reduced_precision
+    assert run["torch_matmul_bf16_reduced_precision"] == env.torch_matmul_bf16_reduced_precision
+
+
 def test_failed_candidates_are_recorded_without_timings(db):
     run_id = db.start_run(capture_environment())
     db.record(

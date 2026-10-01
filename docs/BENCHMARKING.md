@@ -13,13 +13,15 @@ carries:
 | --- | --- |
 | GPU name, compute capability, SM count, VRAM | `torch.cuda.get_device_properties` |
 | CUDA version | `torch.version.cuda` |
-| Driver version | `torch._C._cuda_getDriverVersion`, falling back to `nvidia-smi` |
+| NVIDIA driver version (e.g. 550.54.15) | `nvidia-smi`; PyTorch only exposes the CUDA driver API version, which many driver releases share |
 | PyTorch, Triton, Python versions | the installed packages |
+| Whether fp16 and bf16 GEMMs may reduce in reduced precision | `torch.backends.cuda.matmul`; these change what cuBLAS computes for the PyTorch baselines |
 | Platform, hostname, UTC timestamp | the host |
 | dtype, tensor shapes, kernel configuration | the problem and config descriptors |
 | warmup count, iteration count, timer, L2-flush flag | the harness |
 
-`kernelforge env` prints the same snapshot. A latency without this context is
+`kernelforge env` prints the same snapshot, and `benchmark()` returns it with
+every `TimingResult` (`.environment`). A latency without this context is
 not comparable to anything, which is why it is attached at the row level rather
 than written in a commit message.
 
