@@ -129,6 +129,9 @@ tail is worth knowing about even when it wins.
 - **One GPU.** Never compare a number from one card with a number from
   another. The database records the device per run so the mistake is at least
   detectable.
+- **Shuffled timing order.** The tuner times verified candidates in an order
+  shuffled with its `seed`. Thermal drift over a long session then becomes
+  noise instead of a bias against whichever configurations sort last.
 
 ### Precision
 
