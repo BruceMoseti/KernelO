@@ -87,6 +87,20 @@ def test_fused_linear_rejects_a_mismatched_bias():
         fused_linear_gelu(torch.zeros(4, 8), torch.zeros(8, 16), torch.zeros(8))
 
 
+def test_fused_linear_rejects_a_strided_bias():
+    """The same latent bug the row kernels guard against, in the epilogue.
+
+    The bias is loaded with ``bias_ptr + offs_yn`` and no stride, so a strided
+    view is read as if its elements were adjacent: every bias beyond the first
+    is the wrong one, and the kernel returns a confidently wrong answer. The
+    shape check passes it, because a strided view has the right shape.
+    """
+    bias = torch.zeros(32)[::2]
+    assert bias.shape == (16,) and bias.stride(0) != 1
+    with pytest.raises(ValueError, match="bias must be contiguous"):
+        fused_linear_gelu(torch.zeros(4, 8), torch.zeros(8, 16), bias)
+
+
 def test_vector_add_rejects_mismatched_inputs():
     a = torch.zeros(8)
     with pytest.raises(ValueError, match="shape mismatch"):
