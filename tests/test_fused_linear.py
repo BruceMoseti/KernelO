@@ -1,4 +1,7 @@
-"""Fused linear + bias + GELU correctness. Marked ``gpu`` throughout.
+"""Fused linear + bias + GELU correctness.
+
+Tests marked ``gpu`` need a CUDA device. The rest also run on CPU through
+Triton's interpreter (``TRITON_INTERPRET=1``), which is how CI executes them.
 
 Two things specific to this kernel:
 
@@ -22,12 +25,27 @@ from kernelforge.tuning.config import KernelConfig, Problem
 
 pytest.importorskip("triton")
 
-pytestmark = pytest.mark.gpu
-
 DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
+#: Triton's interpreter does bf16 arithmetic on the raw storage bits, so the
+#: bf16 kernel can only be checked on a GPU.
+DTYPE_PARAMS = [
+    pytest.param(dtype, marks=pytest.mark.gpu) if dtype == torch.bfloat16 else dtype
+    for dtype in DTYPES
+]
+
+#: Shapes with more multiply-adds than this are too slow for the interpreter.
+INTERPRETER_MAX_MACS = 1 << 29
+
+
+def _gpu_only_if_large(shape: tuple[int, int, int]):
+    m, n, k = shape
+    return pytest.param(shape, marks=pytest.mark.gpu) if m * n * k > INTERPRETER_MAX_MACS else shape
+
+
 CORRECTNESS_SHAPES = [
-    tuple(p.dims_dict.values()) for p in workloads.problems("fused_linear", "correctness", "fp16")
+    _gpu_only_if_large(tuple(p.dims_dict.values()))
+    for p in workloads.problems("fused_linear", "correctness", "fp16")
 ]
 
 
@@ -53,7 +71,7 @@ def config(block_m, block_n, block_k, warps, stages) -> KernelConfig:
 
 
 @pytest.mark.parametrize("shape", CORRECTNESS_SHAPES)
-@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("dtype", DTYPE_PARAMS)
 def test_fusion_matches_the_unfused_sequence(shape, dtype, device):
     """The comparison that matters: same answer as matmul + bias + gelu."""
     from kernelforge.kernels.fused_linear import (
@@ -77,7 +95,15 @@ def test_fusion_matches_the_unfused_sequence(shape, dtype, device):
 @pytest.mark.parametrize(
     "tile", [(32, 32, 32, 4, 3), (64, 128, 32, 8, 3), (128, 128, 64, 8, 3), (32, 128, 32, 4, 2)]
 )
-@pytest.mark.parametrize("shape", [(127, 129, 65), (257, 255, 511), (1, 4096, 4096)])
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (127, 129, 65),
+        (257, 255, 511),
+        # A full 4096x4096 weight per tiling is too slow for the interpreter.
+        pytest.param((1, 4096, 4096), marks=pytest.mark.gpu),
+    ],
+)
 def test_boundary_masking_across_tile_shapes(tile, shape, device):
     from kernelforge.kernels.fused_linear import fused_linear_gelu, linear_gelu_reference
 
@@ -173,6 +199,7 @@ def test_every_candidate_agrees_with_the_reference(device):
         )
 
 
+@pytest.mark.gpu
 def test_fusion_reduces_the_kernel_launch_count(device):
     """The structural claim behind the fused kernel, measured.
 

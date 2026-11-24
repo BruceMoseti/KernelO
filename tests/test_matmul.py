@@ -1,6 +1,7 @@
 """GEMM correctness.
 
-Every test here is marked ``gpu`` and skips without a device.
+Tests marked ``gpu`` need a CUDA device. The rest also run on CPU through
+Triton's interpreter (``TRITON_INTERPRET=1``), which is how CI executes them.
 
 The shape lists are the point of this file. Powers of two divide evenly into
 every block size in the search space, so a kernel with a broken boundary mask
@@ -22,14 +23,29 @@ from kernelforge.tuning.config import KernelConfig, Problem
 
 pytest.importorskip("triton")
 
-pytestmark = pytest.mark.gpu
-
 DTYPES = (torch.float16, torch.bfloat16, torch.float32)
+
+#: Triton's interpreter does bf16 arithmetic on the raw storage bits, so the
+#: bf16 GEMM can only be checked on a GPU.
+DTYPE_PARAMS = [
+    pytest.param(dtype, marks=pytest.mark.gpu) if dtype == torch.bfloat16 else dtype
+    for dtype in DTYPES
+]
+
+#: Shapes with more multiply-adds than this are too slow for the interpreter.
+INTERPRETER_MAX_MACS = 1 << 29
+
+
+def _gpu_only_if_large(shape: tuple[int, int, int]):
+    m, n, k = shape
+    return pytest.param(shape, marks=pytest.mark.gpu) if m * n * k > INTERPRETER_MAX_MACS else shape
+
 
 #: The awkward shapes from the public workload suite: primes, one-off-a-tile
 #: sizes, and degenerate single rows and columns.
 CORRECTNESS_SHAPES = [
-    tuple(p.dims_dict.values()) for p in workloads.problems("matmul", "correctness", "fp16")
+    _gpu_only_if_large(tuple(p.dims_dict.values()))
+    for p in workloads.problems("matmul", "correctness", "fp16")
 ]
 
 #: Tile shapes chosen to stress masking from both ends: the smallest tile the
@@ -68,7 +84,7 @@ def reference(a, b):
 
 
 @pytest.mark.parametrize("shape", CORRECTNESS_SHAPES)
-@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("dtype", DTYPE_PARAMS)
 def test_default_config_across_awkward_shapes(shape, dtype, device):
     from kernelforge.kernels.matmul import DEFAULT_CONFIG, matmul
 
@@ -110,6 +126,8 @@ def test_randomised_shapes(seed, device):
     rng = random.Random(seed)
     m, n, k = (rng.randint(1, 600) for _ in range(3))
     dtype = rng.choice(DTYPES)
+    if dtype == torch.bfloat16 and device.type == "cpu":
+        pytest.skip("bf16 needs a GPU: the interpreter does bf16 arithmetic on the raw bits")
     problem = Problem.create("matmul", dtype, M=m, N=n, K=k)
     candidates = MatmulSearchSpace().candidates(problem, device_caps(device))
     chosen = rng.choice(candidates)
@@ -186,6 +204,7 @@ def test_shape_and_dtype_mismatches_are_rejected(device):
         matmul(a, torch.randn(8, device=device, dtype=torch.float16))
 
 
+@pytest.mark.gpu
 def test_triton_autotune_baseline_agrees(device):
     """The comparison baseline has to be correct to be a baseline."""
     from kernelforge.kernels.matmul import matmul_triton_autotune

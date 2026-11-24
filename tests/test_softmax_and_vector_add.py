@@ -1,4 +1,7 @@
-"""Softmax and vector-add correctness. Marked ``gpu`` throughout.
+"""Softmax and vector-add correctness.
+
+Tests marked ``gpu`` need a CUDA device. The rest also run on CPU through
+Triton's interpreter (``TRITON_INTERPRET=1``), which is how CI executes them.
 
 Softmax gets a specific test for the numerical stability shift: without
 subtracting the row maximum, fp16 ``exp`` overflows above x ~ 11, which is an
@@ -16,9 +19,15 @@ from kernelforge.tuning.config import KernelConfig, Problem
 
 pytest.importorskip("triton")
 
-pytestmark = pytest.mark.gpu
-
 DTYPES = (torch.float16, torch.bfloat16, torch.float32)
+
+#: Vector add does its arithmetic in the input dtype, and Triton's interpreter
+#: does bf16 arithmetic on the raw storage bits, so bf16 needs a GPU. Softmax
+#: converts to fp32 first and runs in every dtype on CPU.
+VECTOR_ADD_DTYPES = [
+    pytest.param(dtype, marks=pytest.mark.gpu) if dtype == torch.bfloat16 else dtype
+    for dtype in DTYPES
+]
 
 CORRECTNESS_ROW_SHAPES = [
     tuple(p.dims_dict.values()) for p in workloads.problems("softmax", "correctness", "fp16")
@@ -110,7 +119,7 @@ def test_softmax_rejects_non_2d_input(device):
 
 
 @pytest.mark.parametrize("n", CORRECTNESS_ELEMENT_COUNTS)
-@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("dtype", VECTOR_ADD_DTYPES)
 def test_vector_add_across_sizes(n, dtype, device):
     from kernelforge.kernels.vector_add import DEFAULT_CONFIG, vector_add
 

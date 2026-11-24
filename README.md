@@ -39,7 +39,7 @@ still gets through.)
 | **Hardware-derived search space** | A 432-point GEMM grid reduces to 180 feasible and 48 measured candidates. Filters come from device limits — shared memory, registers per thread, 128-byte transactions, pipeline depth, parallelism — so they transfer across GPUs, and every rejection is attributed to a named rule. |
 | **Correctness gate before ranking** | Scale-invariant error metric (`max\|out−ref\| / max\|ref\|`) with per-dtype thresholds. An incorrect configuration is recorded with its error and dropped, never timed. |
 | **Kernels verified with no GPU** | 5 Triton kernels and 1 handwritten CUDA kernel are lowered to PTX/cubin for `sm80` and `sm90` in ordinary CPU CI. Tests assert tensor-core MMA selection and per-element instruction counts **from the generated PTX**. |
-| **482 tests** | 189 run without a GPU (188 pass, 1 skips for a device); 293 are GPU-gated and skip with a stated reason. Correctness covers primes, one-off-a-tile sizes and degenerate single rows across 3 dtypes and 5 tile shapes. |
+| **482 tests** | 410 run without a GPU: the 189 of the CPU suite (188 pass, 1 skips for a device), and 221 kernel tests that execute the Triton kernels on CPU through Triton's interpreter (209 pass, 12 random bf16 draws skip). 72 are GPU-gated and skip with a stated reason. Correctness covers primes, one-off-a-tile sizes and degenerate single rows across 3 dtypes and 5 tile shapes. |
 | **Operator fusion, quantified** | Bias + GELU folded into the GEMM epilogue. Total DRAM traffic at 4096×11008×4096 fp16 falls from 548 MiB to 204 MiB — exact arithmetic, hardware-independent. The launch-count collapse to one is asserted by a GPU-gated test. |
 | **Roofline-aware reporting** | Arithmetic intensity is reported against the device ridge point: 1024 FLOP/byte for a prefill GEMM versus **1.0** for single-token decode — 153× below an A100's roof, so no tiling can make it compute-bound. |
 
@@ -415,6 +415,7 @@ The unusual property of this repository is how much is checkable without a GPU.
 
 | Claim | Mechanism | Where |
 | --- | --- | --- |
+| Every Triton kernel computes the right answer on awkward shapes | the kernel suites run on CPU tensors under Triton's interpreter (`TRITON_INTERPRET=1`); bf16 GEMMs and the largest shapes need a GPU | `make test-kernels` |
 | Every kernel compiles for Ampere and Hopper | `triton.compile` → PTX + cubin for `sm80`/`sm90` | `tests/test_triton_compile.py` |
 | Every budgeted candidate compiles, for a square *and* a decode shape | the same, over the real search space: 48 candidates for 2048×4096×4096, 30 for 1×11008×4096 | `test_full_candidate_budget_compiles` |
 | The fp16 GEMM reaches the tensor cores | `mma.sync.aligned.m16n8k16` asserted in generated PTX | `test_fp16_gemm_uses_tensor_cores` |
@@ -427,7 +428,8 @@ The unusual property of this repository is how much is checkable without a GPU.
 | Importing the package needs neither Triton nor a CUDA context | 13 CPU-side modules imported in a fresh subprocess, which then reports whether Triton or a CUDA context was pulled in | `tests/test_cpu_only_imports.py` |
 
 ```console
-$ make test                 # 188 passed, 1 skipped — no GPU required
+$ make test                 # 188 passed, 222 skipped — no GPU required
+$ make test-kernels         # the kernel suites on CPU, through Triton's interpreter
 $ make compile-check        # kernels → PTX for sm80 and sm90
 $ make test-slow            # compile every budgeted candidate (48 square, 30 decode)
 $ make test-all             # everything, on a machine with a CUDA device
@@ -540,7 +542,8 @@ make install            # pip install -e '.[dev,report]'
 make install-cpu
 
 make env                # GPU, driver, CUDA, PyTorch, Triton versions
-make test               # 188 passed, 1 skipped
+make test               # 188 passed, 222 skipped
+make test-kernels       # the kernel suites on CPU, through Triton's interpreter
 ```
 
 Optional: Nsight Compute for `--backend nsight`, and a CUDA toolkit for the
@@ -617,10 +620,12 @@ print(result.tflops(result.best.median_ms))
 | Kernel compilation | 28 | no | every kernel → PTX/cubin for `sm80`/`sm90`; instruction-level assertions |
 | Tuner end-to-end | 16 | no | the full pipeline driven by a CPU operator whose configurations fail in each way a real one does |
 | Import hygiene | 3 | no | no Triton import, no CUDA context at module import |
-| Kernel correctness | 293 | yes | GEMM 88, softmax/vector-add 70, RMSNorm 60, fused linear 57, transformer parity 7, launch metadata 5, 6 others. Primes, one-off-a-tile sizes and degenerate rows across 3 dtypes; the GEMM and fused suites also sweep 5 tile shapes and check every budgeted candidate against the reference |
+| Kernel correctness | 221 | no: Triton's CPU interpreter | GEMM 68, softmax/vector-add 60, RMSNorm 60, fused linear 33. Primes, one-off-a-tile sizes and degenerate rows; the GEMM and fused suites also sweep 5 tile shapes and check every budgeted candidate against the reference |
+| GPU-only | 72 | yes | the bf16 GEMMs and vector add (the interpreter does bf16 arithmetic on the raw bits), the largest shapes, transformer parity 7, launch metadata 5, and tests that need CUDA APIs |
 
 ```bash
 make test        # CPU-safe suite
+make test-kernels  # kernel suites on CPU, through Triton's interpreter
 make test-gpu    # device-only tests
 make test-all    # everything
 make test-slow   # compile every budgeted candidate
@@ -642,8 +647,9 @@ Tests designed to fail if a specific decision were reverted:
   returning a wrong answer.
 
 CI separates concerns: [`ci.yml`](.github/workflows/ci.yml) runs lint and the
-CPU suite on Python 3.10 and 3.12 and **asserts the device-code compile checks
-actually ran** rather than skipped; [`gpu-validation.yml`](.github/workflows/gpu-validation.yml)
+CPU suite on Python 3.10 and 3.12, **asserts the device-code compile checks
+actually ran** rather than skipped, and executes the kernel suites on CPU
+through Triton's interpreter; [`gpu-validation.yml`](.github/workflows/gpu-validation.yml)
 runs correctness and benchmarks on a self-hosted GPU runner and uploads result
 artefacts. Neither gates on a latency threshold — a regression gate needs a
 stable baseline on fixed hardware, and treating a shared runner's timings as
