@@ -205,8 +205,12 @@ def test_every_candidate_in_the_budget_compiles(a100_caps):
         # reaches those tiles for a large shape because they have the least
         # reuse. Without this case they would go uncompiled.
         {"M": 1, "N": 11008, "K": 4096},
+        # A narrow N is the same argument on the other axis, and the only way
+        # BLOCK_N=16 is ever selected: for every wider shape it is rejected as
+        # an uncoalesced B tile. This shape is in the `correctness` suite.
+        {"M": 128, "N": 1, "K": 128},
     ],
-    ids=["square", "decode"],
+    ids=["square", "decode", "narrow"],
 )
 def test_full_candidate_budget_compiles(dims, a100_caps):
     """Every candidate the tuner would try, exhaustively. Slow, so opt-in."""

@@ -337,6 +337,10 @@ class _BlockedGemmSpace(SearchSpace):
         dims = problem.dims_dict
         return ceil_div(dims["M"], config["BLOCK_M"]) * ceil_div(dims["N"], config["BLOCK_N"])
 
+    @staticmethod
+    def _overshoots(block: int, sizes: tuple[int, ...], dim: int) -> bool:
+        return block > 2 * dim and block > min(sizes)
+
     def reject_reason(self, config: KernelConfig, problem: Problem, caps: DeviceCaps) -> str | None:
         dims = problem.dims_dict
         m, n, k = dims["M"], dims["N"], dims["K"]
@@ -350,25 +354,40 @@ class _BlockedGemmSpace(SearchSpace):
                 f"{caps.max_shared_memory_per_block // 1024} KiB per-block limit"
             )
 
-        if bm * bn < self.MIN_TILE_ELEMENTS:
+        # The three size heuristics below all say "prefer a bigger tile, or
+        # fewer warps". When the overshoot rule already forbids every bigger
+        # tile and the grid offers no fewer warps, there is nothing left to
+        # prefer, and applying them anyway leaves a small problem with no
+        # candidates at all -- the same failure the overshoot rule's own
+        # carve-out exists to prevent.
+        largest_m = max(b for b in self.BLOCK_M if not self._overshoots(b, self.BLOCK_M, m))
+        largest_n = max(b for b in self.BLOCK_N if not self._overshoots(b, self.BLOCK_N, n))
+        least_bad = (
+            bm == largest_m and bn == largest_n and config["num_warps"] == min(self.NUM_WARPS)
+        )
+
+        if bm * bn < self.MIN_TILE_ELEMENTS and not least_bad:
             return f"tile too small: {bm}x{bn} output elements per program"
 
         acc = self.acc_regs_per_thread(config)
         if acc > MAX_ACC_REGS_PER_THREAD:
             return f"register pressure: {acc:.0f} accumulator registers per thread"
-        if acc < MIN_ACC_REGS_PER_THREAD:
+        if acc < MIN_ACC_REGS_PER_THREAD and not least_bad:
             return f"too little work per thread: {acc:.1f} accumulator registers"
 
         # Efficiency heuristic. Each warp of the MMA pipeline should own at
         # least one 16x16 output tile. Triton *can* decompose otherwise by
         # splitting the K loop within the block, so this excludes
         # configurations that are inefficient rather than impossible.
-        if bm * bn < 256 * config["num_warps"]:
+        if bm * bn < 256 * config["num_warps"] and not least_bad:
             return f"too little output per warp at num_warps={config['num_warps']}"
 
         if bk * width < MIN_CONTIGUOUS_TILE_BYTES:
             return f"uncoalesced A tile: BLOCK_K={bk} is {bk * width} contiguous bytes"
-        if bn * width < MIN_CONTIGUOUS_TILE_BYTES:
+        # A tile at least as wide as the matrix row reads it whole, and the
+        # next row follows it in memory, so the transaction is as full as the
+        # problem allows. Widening BLOCK_N past N buys nothing to reject for.
+        if bn * width < MIN_CONTIGUOUS_TILE_BYTES and bn < n:
             return f"uncoalesced B tile: BLOCK_N={bn} is {bn * width} contiguous bytes"
 
         # A tile larger than the problem computes masked-off work that is
@@ -380,9 +399,9 @@ class _BlockedGemmSpace(SearchSpace):
         # M=1 every tile "overshoots" and an unconditional rule would reject
         # the entire grid -- which is exactly the shape that dominates
         # single-stream decoding and most needs tuning.
-        if bm > 2 * m and bm > min(self.BLOCK_M):
+        if self._overshoots(bm, self.BLOCK_M, m):
             return f"tile overshoot: BLOCK_M={bm} for M={m}"
-        if bn > 2 * n and bn > min(self.BLOCK_N):
+        if self._overshoots(bn, self.BLOCK_N, n):
             return f"tile overshoot: BLOCK_N={bn} for N={n}"
 
         k_iters = ceil_div(k, bk)
@@ -477,7 +496,11 @@ class _RowReductionSpace(SearchSpace):
             return f"row of {problem.dims_dict['cols']} exceeds the single-pass limit"
 
         per_thread = block / (config["num_warps"] * caps.warp_size)
-        if per_thread < self.MIN_ELEMS_PER_THREAD:
+        # The idle-threads rule says "prefer fewer warps". A row narrower than
+        # a single warp leaves lanes idle even at the fewest warps the grid
+        # offers, so applying it there would reject every point and leave the
+        # shape untunable rather than merely awkward.
+        if per_thread < self.MIN_ELEMS_PER_THREAD and config["num_warps"] > min(self.NUM_WARPS):
             return (
                 f"idle threads: {config['num_warps'] * caps.warp_size} threads for "
                 f"BLOCK_SIZE={block}"
