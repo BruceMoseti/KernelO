@@ -16,7 +16,7 @@ import pytest
 import torch
 
 from kernelforge.db import ResultsDB
-from kernelforge.kernels.base import Operator
+from kernelforge.kernels.base import Operator, compiled_baseline
 from kernelforge.runtime.env import DeviceCaps
 from kernelforge.tuning.cache import ConfigCache
 from kernelforge.tuning.config import KernelConfig, Problem
@@ -191,6 +191,52 @@ def test_a_space_with_no_feasible_candidates_yields_no_best():
     assert result.tested == 0
     assert result.best is None
     assert result.ranked() == []
+
+
+def test_a_failing_compiled_baseline_does_not_discard_a_finished_run():
+    """Baselines are measured last, so one failing must not cost the ranking.
+
+    ``torch.compile`` can fail on a shape or a PyTorch build. It used to be
+    invoked while the baseline set was being *built*, outside the guard that
+    reports a baseline as unavailable, so the failure raised out of ``tune()``
+    after every candidate had already been compiled, verified and timed.
+    """
+
+    def explodes(x):
+        raise RuntimeError("backend compiler failed")
+
+    class _BrokenBaselineOperator(_FakeOperator):
+        def baselines(self, problem, inputs):
+            (x,) = inputs
+            return {
+                "torch_eager": lambda: x * 2,
+                "torch_compile": compiled_baseline(explodes, inputs),
+            }
+
+    messages = []
+    result = Tuner(warmup=1, iterations=2, log=messages.append).tune(
+        _BrokenBaselineOperator(), PROBLEM, device="cpu"
+    )
+
+    assert result.best is not None
+    assert result.correct == 2
+    assert "torch_eager" in result.baselines
+    assert "torch_compile" not in result.baselines
+    assert any("torch_compile unavailable" in line for line in messages)
+
+
+def test_the_compiled_baseline_is_not_invoked_while_it_is_built():
+    """Compilation has to happen inside the caller's own error handling."""
+    calls = []
+
+    def record(tensor):
+        calls.append(tensor)
+        return tensor
+
+    run = compiled_baseline(record, (torch.zeros(4),))
+    assert calls == [], "wrapping a baseline must not already call it"
+    run()
+    assert len(calls) == 1
 
 
 def test_results_are_persisted_to_the_database(tmp_path):

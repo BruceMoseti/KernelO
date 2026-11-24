@@ -129,6 +129,12 @@ def fused_linear_gelu(
         raise ValueError(f"shape mismatch: {tuple(x.shape)} @ {tuple(w.shape)}")
     if bias.shape != (w.shape[1],):
         raise ValueError(f"bias must have shape ({w.shape[1]},), got {tuple(bias.shape)}")
+    # The epilogue indexes the bias straight off its base pointer, so a strided
+    # view would be read as if it were contiguous and silently produce a wrong
+    # answer. Rejected rather than copied, so the copy is never hidden inside a
+    # measured region -- the same contract `rmsnorm` holds for `gamma`.
+    if bias.stride(0) != 1:
+        raise ValueError("bias must be contiguous")
     if not (x.dtype == w.dtype == bias.dtype):
         raise ValueError(f"dtype mismatch: {x.dtype}, {w.dtype}, {bias.dtype}")
 

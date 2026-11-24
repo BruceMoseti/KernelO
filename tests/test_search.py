@@ -151,6 +151,81 @@ def test_overshoot_rule_still_bites_when_a_smaller_tile_exists(a100_caps):
         assert config["BLOCK_M"] == min(space.BLOCK_M)
 
 
+@pytest.mark.parametrize("operation", ["matmul", "fused_linear"])
+@pytest.mark.parametrize("dtype", ["fp16", "bf16", "fp32"])
+@pytest.mark.parametrize("m,n,k", [(1, 1, 1), (128, 1, 128), (4096, 8, 4096), (8, 24, 64)])
+def test_narrow_gemms_still_produce_candidates(operation, dtype, m, n, k, a100_caps):
+    """A narrow N must not empty the grid the way a small M once did.
+
+    The size heuristics all prefer a wider tile or fewer warps, and the
+    overshoot rule caps how wide a tile may get. For N=1 the two meet: every
+    tile wide enough to fill a 128-byte transaction overshoots, and every tile
+    that does not overshoot is rejected as too small. Every one of these
+    shapes reported ``feasible: 0`` and made ``kernelforge tune`` exit 1,
+    including ``1x1x1`` and ``128x1x128`` from the ``correctness`` suite.
+    """
+    space = search_space(operation)
+    problem = Problem.create(operation, dtype, M=m, N=n, K=k)
+    assert space.candidates(problem, a100_caps), f"no candidates for {m}x{n}x{k} {dtype}"
+
+
+def test_relaxing_the_size_heuristics_does_not_widen_a_tunable_shape(a100_caps):
+    """The carve-out must only apply where the grid has nothing else to offer.
+
+    The flagship shape admits bigger tiles and more warps, so every size
+    heuristic still bites and the counts stay where the README quotes them.
+    """
+    result = MatmulSearchSpace().generate(GEMM, a100_caps)
+    assert (result.feasible, result.after_prune) == (180, 180)
+
+
+@pytest.mark.parametrize("operation", ["rmsnorm", "softmax"])
+@pytest.mark.parametrize("cols", [1, 3, 16, 31])
+def test_rows_narrower_than_a_warp_still_produce_candidates(operation, cols, a100_caps):
+    """A row that cannot fill one warp is still a row worth measuring.
+
+    ``BLOCK_SIZE`` is the row width rounded up, so below 32 columns every warp
+    count in the grid leaves lanes idle -- including the smallest. Rejecting
+    all of them left ``rmsnorm rows/cols=1 x 1`` from the ``correctness`` suite
+    with nothing to tune.
+    """
+    space = search_space(operation)
+    problem = Problem.create(operation, "fp16", rows=64, cols=cols)
+    candidates = space.candidates(problem, a100_caps)
+    assert candidates, f"no candidates for a {cols}-column row"
+    assert {c["num_warps"] for c in candidates} == {min(space.NUM_WARPS)}
+
+
+def test_idle_thread_rule_still_bites_above_the_fewest_warps(a100_caps):
+    """Relaxing the rule at the floor must not disable it above the floor."""
+    space = RMSNormSearchSpace()
+    problem = Problem.create("rmsnorm", "fp16", rows=64, cols=8)
+    reason = space.reject_reason(
+        KernelConfig("rmsnorm", BLOCK_SIZE=8, ROWS_PER_PROGRAM=1, num_warps=4),
+        problem,
+        a100_caps,
+    )
+    assert reason is not None and "idle threads" in reason
+
+
+@pytest.mark.parametrize(
+    "operation", ["matmul", "fused_linear", "rmsnorm", "softmax", "vector_add"]
+)
+@pytest.mark.parametrize("suite", ["smoke", "sweep", "transformer", "correctness"])
+def test_every_shipped_workload_shape_is_tunable(operation, suite, a100_caps):
+    """No shape the repository ships may leave the tuner with nothing to run.
+
+    The suites are the shapes the benchmark, the experiment script and the
+    kernel tests all draw from, so a shape that generates no candidates is a
+    `kernelforge tune` that exits 1 on a workload this project claims to cover.
+    """
+    from kernelforge.benchmark import workloads
+
+    space = search_space(operation)
+    for problem in workloads.problems(operation, suite, "fp16"):
+        assert space.candidates(problem, a100_caps), f"no candidates for {problem.describe()}"
+
+
 def test_pipeline_filter_rejects_stages_the_k_loop_cannot_fill(a100_caps):
     shallow = Problem.create("matmul", "fp16", M=2048, N=2048, K=32)
     reason = MatmulSearchSpace().reject_reason(

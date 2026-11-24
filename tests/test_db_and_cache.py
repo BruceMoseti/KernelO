@@ -157,6 +157,39 @@ def test_best_per_label_takes_the_fastest_correct_row(db):
     assert best["torch_eager"] == pytest.approx(1500.0)
 
 
+def test_best_per_label_keeps_two_environments_apart(db):
+    """A faster GPU is not a faster kernel.
+
+    One database accumulates runs from whatever machine produced them, and
+    ranking across all of them reports the quicker card as the best result for
+    the shape -- with the slower card's provenance attached, since only one row
+    survives. Each environment keeps its own best.
+    """
+    import dataclasses
+
+    base = capture_environment()
+    for gpu, median in (("A100-SXM4-80GB", 0.9), ("NVIDIA H100 80GB HBM3", 0.4)):
+        run_id = db.start_run(dataclasses.replace(base, gpu_name=gpu))
+        db.record(
+            run_id,
+            PROBLEM,
+            Measurement(
+                label="kernelforge",
+                status="ok",
+                config=CONFIG,
+                verification=passing_verification(),
+                timing=timing(median),
+            ),
+        )
+
+    rows = db.best_per_label()
+    assert len(rows) == 2
+    assert {row["gpu_name"]: row["median_us"] for row in rows} == {
+        "A100-SXM4-80GB": pytest.approx(900.0),
+        "NVIDIA H100 80GB HBM3": pytest.approx(400.0),
+    }
+
+
 def test_rows_can_be_filtered(db):
     run_id = db.start_run(capture_environment())
     other = Problem.create("rmsnorm", "fp16", rows=4096, cols=4096)
