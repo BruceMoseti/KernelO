@@ -195,6 +195,47 @@ def test_two_dtypes_at_one_shape_render_as_separate_series(tmp_path):
     assert figure.stat().st_size > 1000
 
 
+def test_two_gpus_at_one_shape_render_as_separate_series(tmp_path):
+    """Latencies from two GPUs must never be ranked against each other.
+
+    The summary used to keep the fastest row per (shape, dtype, label), so a
+    second machine's measurements silently replaced the first's and the speedup
+    column divided one card's latency by the other's. Both environments are now
+    listed, numbered, and reported side by side.
+    """
+    import dataclasses
+
+    base = capture_environment()
+    with ResultsDB(tmp_path / "results.db") as db:
+        problem = Problem.create("matmul", "fp16", M=1024, N=1024, K=1024)
+        for gpu, eager_ms, mine_ms in (
+            ("A100-SXM4-80GB", 0.30, 0.26),
+            ("NVIDIA H100 80GB HBM3", 0.15, 0.12),
+        ):
+            run_id = db.start_run(dataclasses.replace(base, gpu_name=gpu))
+            for label, ms in (("torch_eager", eager_ms), ("kernelforge", mine_ms)):
+                db.record(
+                    run_id,
+                    problem,
+                    Measurement(
+                        label=label,
+                        status="ok",
+                        verification=ok(),
+                        timing=timing(ms),
+                        tflops=1.0,
+                    ),
+                )
+        artifacts = report.generate(db, tmp_path / "reports")
+
+    text = artifacts.summary.read_text()
+    assert "A100-SXM4-80GB" in text and "NVIDIA H100 80GB HBM3" in text
+    # Two rows for one shape, one per environment, each with its own speedup.
+    assert text.count("| 1024x1024x1024 |") == 2
+    assert "1.15x" in text and "1.25x" in text
+    figure = next(p for p in artifacts.figures if p.name == "matmul_latency.png")
+    assert figure.stat().st_size > 1000
+
+
 def test_mixing_flushed_and_unflushed_timings_is_reported(tmp_path):
     """The two are not comparable, so the report must not stay quiet about it."""
     with ResultsDB(tmp_path / "results.db") as db:

@@ -12,6 +12,12 @@ aggregate computed from it. The database records the GPU, driver, CUDA,
 PyTorch and Triton versions for each run, so if you do share one, that context
 travels with it.
 
+A database still accumulates runs across a driver or PyTorch upgrade, so that
+context is also what `kernelforge report` and `ResultsDB.best_per_label` group
+by: each distinct environment is numbered, gets its own row in every table, and
+is never ranked against or divided into another. Mixing is reported rather
+than resolved by taking whichever number happened to be lower.
+
 To produce results:
 
 ```bash
