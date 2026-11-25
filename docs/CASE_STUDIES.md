@@ -60,13 +60,15 @@ bound and reuse stops being the binding constraint. At 256² the ordering should
 ### Method
 
 ```bash
-kernelforge tune matmul --m 4096 --n 4096 --k 4096 --dtype fp16
-kernelforge tune matmul --m 256  --n 256  --k 1024 --dtype fp16
+kernelforge tune matmul --m 4096 --n 4096 --k 4096 --dtype fp16 --min-candidates 432
+kernelforge tune matmul --m 256  --n 256  --k 1024 --dtype fp16 --min-candidates 432
 kernelforge report     # reports/tuning_heatmap.png is the BLOCK_M x BLOCK_N plane
 ```
 
-Both runs record every candidate, so the heatmap is the whole tile plane rather
-than three hand-picked points.
+The default budget would measure only the 128×128, 128×64 and 64×128 tiles at
+4096³, so both runs lift it to the full 432-point grid. Every feasible
+configuration is then recorded, and the heatmap is the whole feasible tile plane
+rather than three hand-picked points.
 
 ### Counters that decide it
 
@@ -106,7 +108,9 @@ fixed?
 
 Compare `num_warps` of 2, 4 and 8 at a fixed 64×128 tile across a large square
 shape (`4096×4096×4096`), a skinny decode-shaped one (`1×11008×4096`), and a
-short-K one (`4096×4096×256`).
+short-K one (`4096×4096×256`). At `M=1` the overshoot rule admits only
+`BLOCK_M=16`, so the skinny case holds a 16×128 tile fixed instead; the
+default budget measures each of these tiles at all three warp counts.
 
 `num_warps` sets the threads per program, which fixes two things at once:
 
@@ -122,8 +126,8 @@ So the prediction is shape-dependent:
 - **Large square.** Abundant K iterations to pipeline and plenty of programs.
   Expect the middle of the range to win — enough warps to hide latency, enough
   registers per thread for ILP.
-- **Skinny (`M=1`).** One row of output. Most of a 64-row tile is masked off, so
-  a thread's useful work is tiny and the kernel is bound by loading the weight
+- **Skinny (`M=1`).** One row of output. Even a 16-row tile is mostly masked off,
+  so a thread's useful work is tiny and the kernel is bound by loading the weight
   matrix. Expect more warps to win, because the only thing that matters is
   having loads in flight.
 - **Short K.** Few K iterations means the prologue and epilogue are a large

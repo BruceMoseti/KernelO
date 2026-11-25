@@ -88,6 +88,15 @@ def test_explain_reports_the_search_space_without_a_gpu(capsys):
     assert "selected (budget)" in out
 
 
+def test_min_candidates_is_rounded_up_to_a_whole_priority_tier(capsys):
+    """The budget never splits a priority tier, so the flag names a floor, not a cap."""
+    argv = ["tune", "matmul", "-m", "2048", "-n", "4096", "-k", "4096", "--explain"]
+    assert main([*argv, "--min-candidates", "5"]) == 0
+    assert "selected (budget): 12 of 5" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        parse([*argv, "--max-candidates", "5"])
+
+
 def test_tune_fails_clearly_without_a_gpu(capsys):
     if torch.cuda.is_available():
         pytest.skip("this is the no-GPU error path")

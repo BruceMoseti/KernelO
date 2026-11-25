@@ -233,7 +233,9 @@ nothing, because every surviving tiling fills the machine; at `256×256` it also
 removes nothing, because none of them can, and the least-bad option still has
 to be measured. That conditional is the whole rule.
 
-Survivors are then sorted and truncated to a budget. The priority key is
+Survivors are then sorted and cut at a budget, rounded up to the end of a
+priority tier so that configurations the priority cannot tell apart are kept or
+dropped together. The priority key is
 `(−min(programs, sm_count), −reuse, waste)`; clamping the first term at the SM
 count is what makes the same function correct in both regimes — for a large
 problem every tiling fills the GPU, the term ties, and data reuse
@@ -242,9 +244,11 @@ the tiling that keeps more multiprocessors busy. That clamp replaced a binary
 flag which, on a 256×256 GEMM, selected 128×128 tiles occupying four of an
 A100's 108 multiprocessors.
 
-Separating *filters* (hardware facts, which can exclude the true optimum if
-wrong) from the *budget* (a cost bound, which cannot) is deliberate. All three
-counts are reported so a shrinking space is visible rather than silent.
+Separating *filters* (rules that claim a configuration cannot win) from the
+*budget* (a cost bound that only defers what it cuts) is deliberate. Either can
+exclude the true optimum: a filter by being wrong, the budget by never
+measuring it. All three counts are reported so a shrinking space is visible
+rather than silent, and `--min-candidates` raises the budget.
 
 ### Verifying GPU kernels without a GPU
 
@@ -394,10 +398,11 @@ because the thresholds required had no hardware justification, and an
 unjustified filter is how a search space silently loses its optimum. Instead
 there are two mechanisms: *filters* (shared memory, 128-byte transactions,
 pipeline depth — plus three labelled efficiency heuristics) and a *budget* that
-keeps the top 48 under a documented priority. The asymmetry is the argument: a
-wrong filter can exclude the true optimum, a budget can only cost the chance of
-finding it. **Tradeoff:** the budget can miss the best configuration on an
-unusual shape, so all three counts are reported and the budget is a CLI flag.
+keeps the top 48 under a documented priority, never splitting configurations
+that priority ranks equal. The difference is what each claims: a filter says a
+configuration cannot win, the budget only that it ranks lower. **Tradeoff:**
+the budget can miss the best configuration on an unusual shape, so all three
+counts are reported and the budget is a CLI flag.
 
 **Verification as a separate pass, before benchmarking.** A tuner ranking on
 latency prefers kernels that skip work. Pass A compiles and verifies every

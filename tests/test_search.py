@@ -68,7 +68,36 @@ def test_candidate_selection_is_deterministic(a100_caps):
 
 
 def test_budget_is_honoured_when_tightened(a100_caps):
-    assert len(MatmulSearchSpace().candidates(GEMM, a100_caps, max_candidates=5)) == 5
+    """A smaller budget selects fewer candidates, rounded up to a whole tier."""
+    candidates = MatmulSearchSpace().candidates(GEMM, a100_caps, max_candidates=5)
+    assert 5 <= len(candidates) < DEFAULT_MAX_CANDIDATES
+
+
+@pytest.mark.parametrize(
+    "dims,dtype",
+    [((256, 256, 1024), "fp16"), ((127, 127, 127), "fp32"), ((2048, 4096, 4096), "fp16")],
+)
+def test_budget_never_splits_a_priority_tier(dims, dtype, a100_caps):
+    """Configurations the priority cannot tell apart are kept or dropped together.
+
+    At 256x256x1024 the 32x64 and 64x32 tiles tie on every term of the
+    priority. Cutting the tie in serialised order would keep every BLOCK_K=32
+    configuration and drop all nine BLOCK_K=64 ones of 64x32, for no reason
+    the priority states.
+    """
+    space = MatmulSearchSpace()
+    m, n, k = dims
+    problem = Problem.create("matmul", dtype, M=m, N=n, K=k)
+    grid_size = space.generate(problem, a100_caps).generated
+    ranked = space.candidates(problem, a100_caps, max_candidates=grid_size)
+    chosen = space.candidates(problem, a100_caps)
+    assert chosen == ranked[: len(chosen)]
+    assert len(chosen) >= min(DEFAULT_MAX_CANDIDATES, len(ranked))
+    if len(chosen) < len(ranked):
+        last, first_cut = chosen[-1], ranked[len(chosen)]
+        assert space.priority(last, problem, a100_caps) != space.priority(
+            first_cut, problem, a100_caps
+        )
 
 
 def test_shared_memory_filter_is_device_specific(a100_caps, rtx4090_caps):

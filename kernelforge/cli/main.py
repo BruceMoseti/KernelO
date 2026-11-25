@@ -167,8 +167,8 @@ def command_tune(args: argparse.Namespace) -> int:
         from kernelforge.runtime.env import device_caps
 
         space = search_space(args.operation)
-        if args.max_candidates is not None:
-            space.max_candidates = args.max_candidates
+        if args.min_candidates is not None:
+            space.max_candidates = args.min_candidates
         print(space.explain(problem, device_caps()))
         return 0
 
@@ -182,7 +182,7 @@ def command_tune(args: argparse.Namespace) -> int:
         result = Tuner(
             warmup=args.warmup,
             iterations=args.iterations,
-            max_candidates=args.max_candidates,
+            max_candidates=args.min_candidates,
             measure_baselines=not args.no_baselines,
             flush_l2=not args.no_flush_l2,
             db=db,
@@ -554,7 +554,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_shape_arguments(tune)
     _add_measurement_arguments(tune)
     _add_storage_arguments(tune)
-    tune.add_argument("--max-candidates", type=int, help="override the candidate budget")
+    tune.add_argument(
+        "--min-candidates",
+        type=int,
+        help="measure at least this many candidates (all of them if fewer are feasible), "
+        "rounded up to a whole priority tier",
+    )
     tune.add_argument("--no-baselines", action="store_true", help="skip comparison baselines")
     tune.add_argument(
         "--explain",
