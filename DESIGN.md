@@ -139,18 +139,19 @@ device. That turns a real class of kernel bugs into ordinary CI failures, and
 it caught one during development: `_GELU_COEFF` as a plain Python global, which
 a `@triton.jit` kernel cannot read.
 
-It also has a specific limit worth recording, because it changes what a test
-can claim. The standalone compile entry point does not run the software
-pipeliner, so its shared-memory allocation stays at one buffer per operand
-however high `num_stages` is — confirmed by inspecting the TTGIR, and unchanged
-by supplying full pointer-divisibility hints. So the CPU test checks the
-single-buffer tile footprint against the compiler's own figure, and the
-`num_stages` factor is checked against a real launch in
-`tests/test_kernels_gpu.py`, which asserts both that the estimate upper-bounds
-a real allocation and that multi-buffering actually happens for at least one
-multi-stage configuration. Describing the CPU test as validating the whole
-model would have been wrong, and an upper-bound assertion alone would not have
-checked the `num_stages` factor either -- a single-buffer allocation satisfies
+It also has a condition worth recording, because it changes what a test can
+claim. The software pipeliner only issues asynchronous copies when it can prove
+the operand loads contiguous and aligned, and the JIT supplies that proof by
+specializing each launch: a unit stride becomes the constant 1, and sizes
+divisible by 16 carry divisibility hints. Divisibility hints alone are not
+enough — a stride divisible by 16 is not a stride of 1 — and a kernel compiled
+without the constant keeps one buffer per operand however high `num_stages` is,
+which is not the kernel a GPU runs. So the CPU tests compile each GEMM
+specialized as the JIT would for contiguous operands, check that each stage
+adds one operand tile, and check the search space's estimate against the
+compiler's allocation for sm80, sm89, sm90 and sm120. `tests/test_kernels_gpu.py`
+repeats both checks against a real launch. An upper-bound assertion alone would
+not have checked the `num_stages` factor -- a single-buffer allocation satisfies
 it trivially.
 
 The same approach covers the handwritten CUDA kernel. `clang++` in CUDA mode

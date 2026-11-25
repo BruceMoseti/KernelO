@@ -89,20 +89,21 @@ def test_shared_memory_estimate_bounds_real_usage(device):
     candidates; if it under-estimates, the filter admits configurations the
     device cannot run and the budget is spent on `OutOfResources` failures.
 
-    The 25% headroom is for the swizzled operand layout, whose padding the CPU
-    compile test measures directly (up to 2x on the single-buffer footprint).
+    The 25% headroom is for small allocations the model does not count, such
+    as the 16 bytes of barriers sm_100 adds.
 
     Note what this does *not* check: that the allocation scales with
     ``num_stages``. A single-buffer allocation satisfies an upper bound
     trivially. That factor is checked separately below.
     """
+    from kernelforge.runtime.env import device_caps
     from kernelforge.tuning.search import MatmulSearchSpace
 
     space = MatmulSearchSpace()
     problem = Problem.create("matmul", "fp16", M=512, N=512, K=512)
     for case in _SHARED_MEMORY_CASES:
         config = _gemm_config(*case)
-        estimate = space.shared_memory_bytes(config, problem)
+        estimate = space.shared_memory_bytes(config, problem, device_caps(device))
         actual = int(_launch_metadata(config, device).shared)
         assert actual <= estimate * 1.25, (
             f"{config!r}: pipeliner allocated {actual} B, filter estimated {estimate} B"
@@ -113,10 +114,9 @@ def test_pipeliner_multi_buffers_so_the_num_stages_factor_is_real(device):
     """At least one multi-stage configuration must allocate past one buffer.
 
     The ``num_stages`` factor in the filter's estimate exists because Triton's
-    pipeliner keeps that many operand tiles in flight. The ahead-of-time
-    compile test cannot see it -- the standalone compiler does not run the
-    pipeliner at all, which is a documented finding, not an assumption -- so
-    this is the only place the factor is confirmed to correspond to anything.
+    pipeliner keeps operand tiles in flight per stage. The ahead-of-time
+    compile test confirms that for kernels specialized the way the JIT
+    specializes a launch; this confirms it at a real launch.
 
     Phrased as "at least one" rather than "every" because Triton may
     legitimately decline to pipeline a particular loop. If *none* of these

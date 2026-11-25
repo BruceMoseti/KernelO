@@ -91,9 +91,11 @@ physics.
 Changing the problem changes the space. A single-token decode GEMM
 (`--m 1 --n 11008 --k 4096`) leaves only **30** feasible candidates, all at the
 smallest tile the grid offers, because 150 points now overshoot a problem one
-row tall. Changing the *device* changes it too: the same command against RTX
-4090 properties yields 178 rather than 180, three of them newly rejected for
-shared memory the 4090 does not have.
+row tall. Changing the *device* changes it too, though not for this fp16 shape,
+whose largest tile fits in a 4090's shared memory. In fp32 the same command
+yields 293 feasible candidates against RTX 4090 properties and 313 against an
+A100's, the twenty extra rejections all for shared memory the 4090 does not
+have.
 
 With a GPU attached, `kernelforge tune` runs the same pipeline to completion.
 It prints the winning configuration, then the median latency of every
@@ -216,7 +218,7 @@ hardware fact:
 
 | Rule | Kind | Model | Why it binds |
 | --- | --- | --- | --- |
-| Shared memory | hardware | `num_stages × BLOCK_K × (BLOCK_M + BLOCK_N) × itemsize` ≤ per-block opt-in limit | Triton's pipeliner holds `num_stages` operand tiles in flight. A 128×128 tile at `BLOCK_K=64` over 4 stages needs 128 KiB — fits an A100's 163 KiB, does not fit an RTX 4090's 99 KiB. |
+| Shared memory | hardware | `max(buffers × BLOCK_K × (BLOCK_M + BLOCK_N), BLOCK_M × BLOCK_N) × itemsize` ≤ per-block opt-in limit, with `buffers = num_stages − 1` on sm_8x and sm_12x and `num_stages` elsewhere | Triton's pipeliner keeps `num_stages − 1` operand tiles in flight when it copies with `cp.async` (Ampere, Ada, consumer Blackwell) and `num_stages` on Hopper's wgmma path; the epilogue stages the output tile through the same memory. An fp32 128×128 tile at `BLOCK_K=64` over 3 stages needs 128 KiB — fits an A100's 163 KiB, does not fit an RTX 4090's 99 KiB. |
 | Coalescing | hardware | `BLOCK_K × itemsize ≥ 64 B`, same for `BLOCK_N` | A load is issued in 128-byte transactions. Successive tile rows are strided by the full matrix dimension, so a 32-byte row segment wastes three quarters of every line it touches. |
 | Pipeline depth | hardware | `num_stages ≤ ceil(K / BLOCK_K)`, enforced for `num_stages > 2` | There is nothing to overlap if the K loop is shorter than the pipeline. |
 | Register pressure | heuristic | `BLOCK_M × BLOCK_N / threads` fp32 accumulators per thread, in `[4, 128]` | A thread can address 255 registers, so 128×128 on 2 warps (256 per thread) *must* spill. The 128 cap is a judgement: the accumulator is only part of a thread's demand, and the true limit depends on what else the compiler allocates. |
@@ -269,17 +271,19 @@ without `nvcc`. The tests assert its instruction profile — five unrolled warp
 shuffles (log₂ 32), two barriers, one `rsqrt` per instantiation, and no
 out-of-line device calls.
 
-This has a documented limit, which matters because it changes what a test may
-claim: the standalone compile entry point does not run the software pipeliner,
-so its shared-memory allocation stays at one buffer per operand however high
-`num_stages` is — confirmed by inspecting the TTGIR, and unchanged by supplying
-full pointer-divisibility hints. The CPU test therefore checks the single-buffer
-tile footprint against the compiler's own figure. A GPU-gated test then checks
-two things a launch can show: that the estimate is an *upper bound* on real
-usage, which is the property the filter needs — over-estimating costs
-candidates, under-estimating admits configurations the device cannot run — and
-separately that at least one multi-stage configuration allocates past a single
-operand buffer, so the `num_stages` factor is confirmed rather than assumed.
+This has one condition, which matters because it changes what a test may
+claim: the software pipeliner only issues asynchronous copies when it can prove
+the operand loads contiguous and aligned, and the JIT supplies that proof by
+specializing each launch — a unit stride becomes the constant 1, and sizes
+divisible by 16 carry divisibility hints. Divisibility hints alone are not
+enough: a kernel compiled without the unit-stride constant keeps one buffer per
+operand however high `num_stages` is. The CPU tests therefore compile each GEMM
+specialized as the JIT would for contiguous operands, check that every pipeline
+stage adds one operand tile, and check that the estimate is an *upper bound* on
+the compiler's allocation for `sm80`, `sm89`, `sm90` and `sm120` — the property
+the filter needs: over-estimating costs candidates, under-estimating admits
+configurations the device cannot run. A GPU-gated test repeats both checks
+against a real launch.
 
 ### Why the correctness metric is scale-invariant
 
@@ -419,7 +423,7 @@ The unusual property of this repository is how much is checkable without a GPU.
 | Every budgeted candidate compiles, for a square *and* a decode shape | the same, over the real search space: 48 candidates for 2048×4096×4096, 30 for 1×11008×4096 | `test_full_candidate_budget_compiles` |
 | The fp16 GEMM reaches the tensor cores | `mma.sync.aligned.m16n8k16` asserted in generated PTX | `test_fp16_gemm_uses_tensor_cores` |
 | The fused epilogue costs one exponential per element | `ex2.approx.f32` count vs accumulators per thread | `test_fused_epilogue_costs_one_exponential_per_element` |
-| The shared-memory model matches the compiler | single-buffer tile footprint vs the compiler's allocation | `test_shared_memory_estimate_bounds_the_tile` |
+| The shared-memory model bounds the compiler | the estimate vs the compiler's allocation at every pipeline depth, for `sm80`/`sm89`/`sm90`/`sm120` | `test_shared_memory_estimate_bounds_the_compiler` |
 | The CUDA kernel compiles for `sm80`/`sm90` | `clang++` in CUDA mode, no `nvcc` | `tests/test_cuda_rmsnorm.py` |
 | Its instruction profile is as intended | 5 warp shuffles, 2 barriers, 1 `rsqrt`, no `.func` | `test_warp_reduction_is_fully_unrolled` |
 | An incorrect configuration is never ranked | tuner driven end-to-end on a CPU operator whose configs fail in each real way | `tests/test_tuner.py` |

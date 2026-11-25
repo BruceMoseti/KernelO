@@ -7,6 +7,13 @@ a configuration that overruns shared memory all fail here. The compiler also
 reports the shared memory it allocated, which is how the search space's
 shared-memory model is validated against the thing it is modelling.
 
+A kernel has to be compiled the way the JIT compiles it for that to hold. The
+JIT specializes every launch on its argument values -- an integer equal to 1
+becomes a constant, and integers divisible by 16 and 16-byte-aligned pointers
+carry a divisibility hint -- and the software pipeliner relies on those facts
+to issue asynchronous copies. Without them it keeps one buffer per operand
+whatever ``num_stages`` says, which is not the kernel a GPU runs.
+
 This is a test helper rather than part of the package: it exists to check the
 kernels, not to run them.
 """
@@ -15,8 +22,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import torch
 import triton
-from triton.backends.compiler import GPUTarget
+from triton._C.libtriton import native_specialize_impl
+from triton.backends.compiler import BaseBackend, GPUTarget
 from triton.compiler import ASTSource
 
 #: (name, compute capability). sm80 is Ampere (A100), sm90 is Hopper (H100).
@@ -45,9 +54,10 @@ def compile_for_target(
     capability: int = 80,
     num_warps: int = 4,
     num_stages: int = 3,
+    attrs: dict | None = None,
 ) -> CompiledKernel:
     """Compile ``kernel`` for a CUDA target and return what the compiler reported."""
-    source = ASTSource(fn=kernel, signature=signature, constexprs=constexprs)
+    source = ASTSource(fn=kernel, signature=signature, constexprs=constexprs, attrs=attrs)
     compiled = triton.compile(
         source,
         target=GPUTarget("cuda", capability, 32),
@@ -62,48 +72,26 @@ def compile_for_target(
     )
 
 
-def gemm_signature(dtype: str, *, bias: bool = False) -> dict[str, str]:
-    ptr = PTR_TYPES[dtype]
-    sig = {
-        "a_ptr": ptr,
-        "b_ptr": ptr,
-        "c_ptr": ptr,
-        "M": "i32",
-        "N": "i32",
-        "K": "i32",
-        "stride_am": "i32",
-        "stride_ak": "i32",
-        "stride_bk": "i32",
-        "stride_bn": "i32",
-        "stride_cm": "i32",
-        "stride_cn": "i32",
-        "BLOCK_M": "constexpr",
-        "BLOCK_N": "constexpr",
-        "BLOCK_K": "constexpr",
-        "GROUP_M": "constexpr",
-    }
-    if bias:
-        keys = list(sig)
-        renamed = {
-            "a_ptr": "x_ptr",
-            "b_ptr": "w_ptr",
-            "c_ptr": "y_ptr",
-            "stride_am": "stride_xm",
-            "stride_ak": "stride_xk",
-            "stride_bk": "stride_wk",
-            "stride_bn": "stride_wn",
-            "stride_cm": "stride_ym",
-            "stride_cn": "stride_yn",
-        }
-        sig = {renamed.get(k, k): sig[k] for k in keys}
-        # bias_ptr sits between w_ptr and y_ptr in the kernel signature.
-        ordered = {}
-        for key, value in sig.items():
-            if key == "y_ptr":
-                ordered["bias_ptr"] = ptr
-            ordered[key] = value
-        sig = ordered
-    return sig
+def specialize(kernel, args: list) -> tuple[dict[str, str], dict[str, object], dict]:
+    """Signature, constexprs and divisibility hints the JIT derives from ``args``."""
+    signature: dict[str, str] = {}
+    constexprs: dict[str, object] = {}
+    attrs: dict = {}
+    for index, (name, value) in enumerate(zip(kernel.arg_names, args, strict=False)):
+        kind, hint = native_specialize_impl(BaseBackend, value, False, True, True)
+        if kind == "constexpr":
+            constexprs[name] = hint
+        elif hint == "D":
+            attrs[(index,)] = [["tt.divisibility", 16]]
+        signature[name] = kind
+    return signature, constexprs, attrs
+
+
+def gemm_args(dtype: torch.dtype, m: int, n: int, k: int, *, bias: bool = False) -> list:
+    """Runtime arguments of a GEMM launch on contiguous row-major operands."""
+    operand = torch.empty(0, dtype=dtype)
+    pointers = [operand] * (4 if bias else 3)
+    return [*pointers, m, n, k, k, 1, n, 1, n, 1]
 
 
 def gemm_constexprs(config, dtype: str) -> dict[str, object]:
